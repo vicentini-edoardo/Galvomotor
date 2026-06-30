@@ -1,13 +1,13 @@
-"""Manual galvo control panel: cross controller, connection, live position."""
+"""Connection and motion panels for galvo and parabolic-mirror control."""
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
-    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -20,19 +20,13 @@ from PyQt6.QtWidgets import (
 )
 
 from galvo_gui.gui.widgets import LogView, ReadoutLabel
-from galvo_gui.motion.base import GalvoBackend, GalvoError
+from galvo_gui.motion.base import STANDARD_STEP_OPTIONS_NM, GalvoBackend, GalvoError
 
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 
 
-class ManualPanel(QWidget):
-    """Manual galvo jog + connection panel (Tab 1).
-
-    Emits:
-        backend_connected(GalvoBackend): a connected backend is ready for use
-        backend_disconnected(): backend has been disconnected
-        log_message(str): status message for the status bar
-    """
+class ConnectionPanel(QWidget):
+    """Connection settings and lifecycle for the shared backend instance."""
 
     backend_connected = pyqtSignal(object)   # GalvoBackend
     backend_disconnected = pyqtSignal()
@@ -45,35 +39,19 @@ class ManualPanel(QWidget):
         self._build_ui()
         self._restore_settings()
 
-        # 2 Hz position refresh timer
-        self._pos_timer = QTimer(self)
-        self._pos_timer.setInterval(500)
-        self._pos_timer.timeout.connect(self._refresh_position)
-
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
-
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setSpacing(8)
-
         root.addWidget(self._build_connection_group())
-        root.addWidget(self._build_cross_group())
-        root.addWidget(self._build_position_group())
-
         self._log = LogView(self)
         root.addWidget(self._log)
         root.addStretch()
-
-        self._set_controls_enabled(False)
 
     def _build_connection_group(self) -> QGroupBox:
         grp = QGroupBox("Connection")
         grid = QGridLayout(grp)
         grid.setColumnStretch(1, 1)
 
-        # Backend selector
         grid.addWidget(QLabel("Backend:"), 0, 0)
         self._backend_combo = QComboBox()
         self._backend_combo.addItem("Mock (no hardware)")
@@ -81,12 +59,10 @@ class ManualPanel(QWidget):
         self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         grid.addWidget(self._backend_combo, 0, 1, 1, 2)
 
-        # neaSNOM host
         grid.addWidget(QLabel("Host:"), 1, 0)
         self._host_edit = QLineEdit("nea-server")
         grid.addWidget(self._host_edit, 1, 1, 1, 2)
 
-        # Cal files path (real backend only)
         grid.addWidget(QLabel("Cal files:"), 2, 0)
         self._cal_edit = QLineEdit(str(_DEFAULT_CAL_DIR))
         grid.addWidget(self._cal_edit, 2, 1)
@@ -94,93 +70,32 @@ class ManualPanel(QWidget):
         browse_btn.setFixedWidth(30)
         browse_btn.clicked.connect(self._browse_cal)
         grid.addWidget(browse_btn, 2, 2)
-        self._cal_row_widgets = [self._cal_edit, browse_btn,
-                                  grid.itemAtPosition(2, 0).widget()]  # type: ignore[union-attr]
+        self._cal_row_widgets = [
+            grid.itemAtPosition(2, 0).widget(),  # type: ignore[union-attr]
+            self._cal_edit,
+            browse_btn,
+        ]
 
-        # Connect / Disconnect button
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setProperty("accent", True)
         self._connect_btn.clicked.connect(self._on_connect_toggle)
         grid.addWidget(self._connect_btn, 3, 0, 1, 3)
 
-        self._on_backend_changed(0)  # set initial host/cal visibility
+        self._on_backend_changed(0)
         return grp
-
-    def _build_cross_group(self) -> QGroupBox:
-        grp = QGroupBox("Manual Control")
-        vbox = QVBoxLayout(grp)
-
-        # Step size
-        step_row = QHBoxLayout()
-        step_row.addWidget(QLabel("Step (nm):"))
-        self._step_spin = QDoubleSpinBox()
-        self._step_spin.setRange(1.0, 100_000.0)
-        self._step_spin.setValue(100.0)
-        self._step_spin.setDecimals(0)
-        self._step_spin.setSingleStep(100.0)
-        step_row.addWidget(self._step_spin)
-        step_row.addStretch()
-        vbox.addLayout(step_row)
-
-        # Cross buttons
-        cross = QGridLayout()
-        cross.setSpacing(4)
-
-        self._btn_up = QPushButton("▲")
-        self._btn_down = QPushButton("▼")
-        self._btn_left = QPushButton("◀")
-        self._btn_right = QPushButton("▶")
-        self._btn_center = QPushButton("⊙")
-
-        for btn in (self._btn_up, self._btn_down, self._btn_left,
-                    self._btn_right, self._btn_center):
-            btn.setFixedSize(48, 36)
-
-        cross.addWidget(self._btn_up,    0, 1)
-        cross.addWidget(self._btn_left,  1, 0)
-        cross.addWidget(self._btn_center, 1, 1)
-        cross.addWidget(self._btn_right,  1, 2)
-        cross.addWidget(self._btn_down,   2, 1)
-
-        self._btn_up.clicked.connect(lambda: self._jog(0, 1))
-        self._btn_down.clicked.connect(lambda: self._jog(0, -1))
-        self._btn_left.clicked.connect(lambda: self._jog(-1, 0))
-        self._btn_right.clicked.connect(lambda: self._jog(1, 0))
-        self._btn_center.clicked.connect(self._goto_center)
-
-        cross_widget = QWidget()
-        cross_widget.setLayout(cross)
-        vbox.addWidget(cross_widget)
-
-        return grp
-
-    def _build_position_group(self) -> QGroupBox:
-        grp = QGroupBox("Position")
-        grid = QGridLayout(grp)
-
-        grid.addWidget(QLabel("X (nm):"), 0, 0)
-        self._x_label = ReadoutLabel("--")
-        grid.addWidget(self._x_label, 0, 1)
-
-        grid.addWidget(QLabel("Y (nm):"), 1, 0)
-        self._y_label = ReadoutLabel("--")
-        grid.addWidget(self._y_label, 1, 1)
-
-        return grp
-
-    # ------------------------------------------------------------------
-    # Connection
-    # ------------------------------------------------------------------
 
     def _on_backend_changed(self, index: int) -> None:
-        is_real = (index == 1)
+        is_real = index == 1
         self._host_edit.setVisible(is_real)
-        for w in self._cal_row_widgets:
-            w.setVisible(is_real)
+        for widget in self._cal_row_widgets:
+            widget.setVisible(is_real)
 
     def _browse_cal(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select cal_files directory",
-                                                self._cal_edit.text())
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select cal_files directory",
+            self._cal_edit.text(),
+        )
         if path:
             self._cal_edit.setText(path)
 
@@ -205,8 +120,7 @@ class ManualPanel(QWidget):
                 GalvoNeaBackend = None  # type: ignore[assignment, misc]
             if not GALVO_AVAILABLE:
                 self._log.append_line(
-                    "ERROR: galvo_functions / nea_tools not available. "
-                    "Using Mock instead."
+                    "ERROR: galvo_functions / nea_tools not available. Using Mock instead."
                 )
                 backend = MockGalvoBackend()
                 used_mock_fallback = True
@@ -221,15 +135,12 @@ class ManualPanel(QWidget):
             return
 
         self._backend = backend
+        self._backend_combo.setEnabled(False)
         self._connect_btn.setText("Disconnect")
         self._connect_btn.setProperty("accent", False)
-        self._connect_btn.setProperty("pending", False)
         self._connect_btn.style().unpolish(self._connect_btn)  # type: ignore[union-attr]
         self._connect_btn.style().polish(self._connect_btn)    # type: ignore[union-attr]
-        self._backend_combo.setEnabled(False)
-        self._set_controls_enabled(True)
-        self._pos_timer.start()
-        self._refresh_position()
+
         if index == 0:
             name = "Mock"
         elif used_mock_fallback:
@@ -243,37 +154,187 @@ class ManualPanel(QWidget):
     def _disconnect(self) -> None:
         if self._backend is None:
             return
-        self._pos_timer.stop()
         try:
             self._backend.disconnect()
         except Exception as exc:  # noqa: BLE001
             self._log.append_line(f"Disconnect error: {exc}")
         self._backend = None
+        self._backend_combo.setEnabled(True)
         self._connect_btn.setText("Connect")
         self._connect_btn.setProperty("accent", True)
         self._connect_btn.style().unpolish(self._connect_btn)  # type: ignore[union-attr]
         self._connect_btn.style().polish(self._connect_btn)    # type: ignore[union-attr]
-        self._backend_combo.setEnabled(True)
-        self._set_controls_enabled(False)
-        self._x_label.setText("--")
-        self._y_label.setText("--")
         self._log.append_line("Disconnected.")
         self.log_message.emit("Galvo disconnected")
         self.backend_disconnected.emit()
 
-    # ------------------------------------------------------------------
-    # Jog
-    # ------------------------------------------------------------------
+    def _restore_settings(self) -> None:
+        s = self._settings
+        with contextlib.suppress(Exception):
+            self._backend_combo.setCurrentIndex(int(s.value("backend_index", 0)))  # type: ignore[arg-type]
+        host = s.value("host", "nea-server")
+        if isinstance(host, str):
+            self._host_edit.setText(host)
+        cal = s.value("cal_path", str(_DEFAULT_CAL_DIR))
+        if isinstance(cal, str):
+            self._cal_edit.setText(cal)
 
-    def _jog(self, sign_x: int, sign_y: int) -> None:
+    def save_settings(self) -> None:
+        s = self._settings
+        s.setValue("backend_index", self._backend_combo.currentIndex())
+        s.setValue("host", self._host_edit.text())
+        s.setValue("cal_path", self._cal_edit.text())
+
+    def closeEvent(self, event: object) -> None:  # type: ignore[override]
+        self.save_settings()
+        if self._backend is not None and self._backend.is_connected():
+            self._disconnect()
+        super().closeEvent(event)  # type: ignore[misc]
+
+
+class MotionPanel(QWidget):
+    """Manual XY/Z motion controls for a connected backend."""
+
+    log_message = pyqtSignal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._backend: GalvoBackend | None = None
+        self._locked = False
+        self._settings = QSettings("galvo_gui", "MotionPanel")
+        self._build_ui()
+        self._restore_settings()
+
+        self._pos_timer = QTimer(self)
+        self._pos_timer.setInterval(500)
+        self._pos_timer.timeout.connect(self._refresh_position)
+
+        self._set_controls_enabled(False, False)
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+        root.addWidget(self._build_motion_group())
+        root.addWidget(self._build_position_group())
+        root.addStretch()
+
+    def _build_motion_group(self) -> QGroupBox:
+        grp = QGroupBox("Motion")
+        vbox = QVBoxLayout(grp)
+
+        step_row = QHBoxLayout()
+        step_row.addWidget(QLabel("XY step (nm):"))
+        self._xy_step_combo = self._build_step_combo()
+        step_row.addWidget(self._xy_step_combo)
+        step_row.addSpacing(12)
+        step_row.addWidget(QLabel("Z step (nm):"))
+        self._z_step_combo = self._build_step_combo()
+        step_row.addWidget(self._z_step_combo)
+        step_row.addStretch()
+        vbox.addLayout(step_row)
+
+        grid = QGridLayout()
+        grid.setSpacing(4)
+
+        self._btn_up = QPushButton("▲")
+        self._btn_down = QPushButton("▼")
+        self._btn_left = QPushButton("◀")
+        self._btn_right = QPushButton("▶")
+        self._btn_center = QPushButton("⊙")
+        self._btn_z_up = QPushButton("▲")
+        self._btn_z_down = QPushButton("▼")
+
+        for btn in (
+            self._btn_up,
+            self._btn_down,
+            self._btn_left,
+            self._btn_right,
+            self._btn_center,
+            self._btn_z_up,
+            self._btn_z_down,
+        ):
+            btn.setFixedSize(48, 36)
+
+        grid.addWidget(self._btn_up, 0, 1)
+        grid.addWidget(self._btn_left, 1, 0)
+        grid.addWidget(self._btn_center, 1, 1)
+        grid.addWidget(self._btn_right, 1, 2)
+        grid.addWidget(self._btn_down, 2, 1)
+        grid.addWidget(QLabel("Z"), 1, 3)
+        grid.addWidget(self._btn_z_up, 0, 4)
+        grid.addWidget(self._btn_z_down, 2, 4)
+
+        self._btn_up.clicked.connect(lambda: self._jog_xy(0, 1))
+        self._btn_down.clicked.connect(lambda: self._jog_xy(0, -1))
+        self._btn_left.clicked.connect(lambda: self._jog_xy(-1, 0))
+        self._btn_right.clicked.connect(lambda: self._jog_xy(1, 0))
+        self._btn_center.clicked.connect(self._goto_center)
+        self._btn_z_up.clicked.connect(lambda: self._jog_z(1))
+        self._btn_z_down.clicked.connect(lambda: self._jog_z(-1))
+
+        cross_widget = QWidget()
+        cross_widget.setLayout(grid)
+        vbox.addWidget(cross_widget)
+        return grp
+
+    def _build_position_group(self) -> QGroupBox:
+        grp = QGroupBox("Position")
+        grid = QGridLayout(grp)
+
+        grid.addWidget(QLabel("X (nm):"), 0, 0)
+        self._x_label = ReadoutLabel("--")
+        grid.addWidget(self._x_label, 0, 1)
+
+        grid.addWidget(QLabel("Y (nm):"), 1, 0)
+        self._y_label = ReadoutLabel("--")
+        grid.addWidget(self._y_label, 1, 1)
+
+        grid.addWidget(QLabel("Z (nm):"), 2, 0)
+        self._z_label = ReadoutLabel("--")
+        grid.addWidget(self._z_label, 2, 1)
+        return grp
+
+    def _build_step_combo(self) -> QComboBox:
+        combo = QComboBox()
+        for step_nm in STANDARD_STEP_OPTIONS_NM:
+            combo.addItem(f"{step_nm:g}")
+        combo.setCurrentText("100")
+        return combo
+
+    def set_backend(self, backend: GalvoBackend) -> None:
+        self._backend = backend
+        self._apply_step_availability()
+        self._refresh_position()
+        if not self._locked:
+            self._pos_timer.start()
+
+    def clear_backend(self) -> None:
+        self._backend = None
+        self._pos_timer.stop()
+        self._x_label.setText("--")
+        self._y_label.setText("--")
+        self._z_label.setText("--")
+        self._set_controls_enabled(False, False)
+
+    def _jog_xy(self, sign_x: int, sign_y: int) -> None:
         if self._backend is None:
             return
-        step = self._step_spin.value()
+        step_nm = float(self._xy_step_combo.currentText())
         try:
-            self._backend.move_relative(sign_x * step, sign_y * step)
+            self._backend.move_relative(sign_x * step_nm, sign_y * step_nm)
             self._refresh_position()
         except GalvoError as exc:
-            self._log.append_line(f"Move error: {exc}")
+            self.log_message.emit(f"Move error: {exc}")
+
+    def _jog_z(self, sign_z: int) -> None:
+        if self._backend is None:
+            return
+        step_nm = float(self._z_step_combo.currentText())
+        try:
+            self._backend.move_z_relative(sign_z * step_nm)
+            self._refresh_position()
+        except GalvoError as exc:
+            self.log_message.emit(f"Z move error: {exc}")
 
     def _goto_center(self) -> None:
         if self._backend is None:
@@ -282,69 +343,101 @@ class ManualPanel(QWidget):
             self._backend.goto_center()
             self._refresh_position()
         except GalvoError as exc:
-            self._log.append_line(f"Center error: {exc}")
+            self.log_message.emit(f"Center error: {exc}")
 
     def _refresh_position(self) -> None:
         if self._backend is None or not self._backend.is_connected():
             return
         try:
-            x, y = self._backend.read_xy_nm()
-            self._x_label.setText(f"{x:.0f}")
-            self._y_label.setText(f"{y:.0f}")
+            x_nm, y_nm = self._backend.read_xy_nm()
+            z_nm = self._backend.read_z_nm()
         except Exception:  # noqa: BLE001
-            pass
+            return
+        self._x_label.setText(f"{x_nm:.0f}")
+        self._y_label.setText(f"{y_nm:.0f}")
+        self._z_label.setText(f"{z_nm:.0f}")
 
-    # ------------------------------------------------------------------
-    # Enable/disable controls
-    # ------------------------------------------------------------------
+    def _apply_step_availability(self) -> None:
+        if self._backend is None or not self._backend.is_connected():
+            self._set_controls_enabled(False, False)
+            return
 
-    def _set_controls_enabled(self, enabled: bool) -> None:
-        for btn in (self._btn_up, self._btn_down, self._btn_left,
-                    self._btn_right, self._btn_center):
-            btn.setEnabled(enabled)
-        self._step_spin.setEnabled(enabled)
+        xy_steps = self._backend.available_xy_steps_nm()
+        z_steps = self._backend.available_z_steps_nm()
+        self._set_combo_item_enabled(self._xy_step_combo, xy_steps)
+        self._set_combo_item_enabled(self._z_step_combo, z_steps)
+        self._ensure_combo_selection(self._xy_step_combo, xy_steps)
+        self._ensure_combo_selection(self._z_step_combo, z_steps)
+        self._set_controls_enabled(bool(xy_steps), bool(z_steps))
 
-    # ------------------------------------------------------------------
-    # QSettings persistence
-    # ------------------------------------------------------------------
+    def _set_combo_item_enabled(
+        self,
+        combo: QComboBox,
+        available_steps: tuple[float, ...],
+    ) -> None:
+        model = combo.model()
+        item_fn = getattr(model, "item", None)
+        available_labels = {f"{step_nm:g}" for step_nm in available_steps}
+        for idx in range(combo.count()):
+            item = item_fn(idx) if callable(item_fn) else None
+            if item is not None:
+                item.setEnabled(combo.itemText(idx) in available_labels)
+
+    def _ensure_combo_selection(
+        self,
+        combo: QComboBox,
+        available_steps: tuple[float, ...],
+    ) -> None:
+        if not available_steps:
+            return
+        if combo.currentText() in {f"{step_nm:g}" for step_nm in available_steps}:
+            return
+        combo.setCurrentText(f"{available_steps[0]:g}")
+
+    def _set_controls_enabled(self, xy_enabled: bool, z_enabled: bool) -> None:
+        enable_xy = (
+            xy_enabled
+            and not self._locked
+            and self._backend is not None
+            and self._backend.is_connected()
+        )
+        enable_z = (
+            z_enabled
+            and not self._locked
+            and self._backend is not None
+            and self._backend.is_connected()
+        )
+        for btn in (self._btn_up, self._btn_down, self._btn_left, self._btn_right, self._btn_center):
+            btn.setEnabled(enable_xy)
+        for btn in (self._btn_z_up, self._btn_z_down):
+            btn.setEnabled(enable_z)
+        self._xy_step_combo.setEnabled(enable_xy)
+        self._z_step_combo.setEnabled(enable_z)
 
     def _restore_settings(self) -> None:
-        import contextlib
-        s = self._settings
-        v = s.value("backend_index", 0)
-        with contextlib.suppress(Exception):
-            self._backend_combo.setCurrentIndex(int(v))  # type: ignore[arg-type]
-        host = s.value("host", "nea-server")
-        if isinstance(host, str):
-            self._host_edit.setText(host)
-        cal = s.value("cal_path", str(_DEFAULT_CAL_DIR))
-        if isinstance(cal, str):
-            self._cal_edit.setText(cal)
-        step = s.value("step_nm", 100.0)
-        with contextlib.suppress(Exception):
-            self._step_spin.setValue(float(step))  # type: ignore[arg-type]
+        xy_step = self._settings.value("xy_step_nm", "100")
+        z_step = self._settings.value("z_step_nm", "100")
+        if isinstance(xy_step, str):
+            self._xy_step_combo.setCurrentText(xy_step)
+        if isinstance(z_step, str):
+            self._z_step_combo.setCurrentText(z_step)
 
     def save_settings(self) -> None:
-        s = self._settings
-        s.setValue("backend_index", self._backend_combo.currentIndex())
-        s.setValue("host", self._host_edit.text())
-        s.setValue("cal_path", self._cal_edit.text())
-        s.setValue("step_nm", self._step_spin.value())
+        self._settings.setValue("xy_step_nm", self._xy_step_combo.currentText())
+        self._settings.setValue("z_step_nm", self._z_step_combo.currentText())
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
-        if self._backend is not None and self._backend.is_connected():
-            self._disconnect()
+        self._pos_timer.stop()
         super().closeEvent(event)  # type: ignore[misc]
 
-    # ------------------------------------------------------------------
-    # Public — called from MainWindow on scan start/stop
-    # ------------------------------------------------------------------
-
     def lock_for_scan(self, locked: bool) -> None:
-        """Disable jog controls during an active scan."""
-        self._set_controls_enabled(not locked)
+        self._locked = locked
         if locked:
             self._pos_timer.stop()
         elif self._backend is not None and self._backend.is_connected():
             self._pos_timer.start()
+        self._apply_step_availability()
+
+
+ManualPanel = ConnectionPanel

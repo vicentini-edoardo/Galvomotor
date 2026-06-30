@@ -1,4 +1,4 @@
-"""Main application window: QTabWidget with Manual and Scan tabs."""
+"""Main application window: connection, motion, and scan tabs."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from galvo_gui.gui.panel_manual import ManualPanel
+from galvo_gui.gui.panel_manual import ConnectionPanel, MotionPanel
 from galvo_gui.gui.panel_scan import ScanPanel
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -144,7 +144,7 @@ class _BranchDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """Top-level window: two-tab layout for manual control and raster scan."""
+    """Top-level window: connection, motion, and scan tabs."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -153,17 +153,21 @@ class MainWindow(QMainWindow):
         self._tabs = QTabWidget(self)
         self.setCentralWidget(self._tabs)
 
-        self._manual = ManualPanel(self)
+        self._connection = ConnectionPanel(self)
+        self._motion = MotionPanel(self)
         self._scan = ScanPanel(self)
-        self._tabs.addTab(self._manual, "Manual")
+        self._tabs.addTab(self._connection, "Connection")
+        self._tabs.addTab(self._motion, "Motion")
         self._tabs.addTab(self._scan, "Scan")
 
-        # Wire backend connect/disconnect → scan panel
-        self._manual.backend_connected.connect(self._scan.set_backend)
-        self._manual.backend_disconnected.connect(self._scan.clear_backend)
+        # Wire backend connect/disconnect → motion and scan panels
+        self._connection.backend_connected.connect(self._motion.set_backend)
+        self._connection.backend_connected.connect(self._scan.set_backend)
+        self._connection.backend_disconnected.connect(self._motion.clear_backend)
+        self._connection.backend_disconnected.connect(self._scan.clear_backend)
 
         # Lock jog controls during scan
-        self._scan.running_changed.connect(self._manual.lock_for_scan)
+        self._scan.running_changed.connect(self._motion.lock_for_scan)
 
         # Status bar
         self._status_bar = QStatusBar(self)
@@ -193,10 +197,11 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(QLabel("galvo-gui v0.1"), 0)
 
         # Wire status updates
-        self._manual.backend_connected.connect(self._on_connected)
-        self._manual.backend_disconnected.connect(self._on_disconnected)
+        self._connection.backend_connected.connect(self._on_connected)
+        self._connection.backend_disconnected.connect(self._on_disconnected)
         self._scan.running_changed.connect(self._on_scan_running)
-        self._manual.log_message.connect(self._status_bar.showMessage)
+        self._connection.log_message.connect(self._status_bar.showMessage)
+        self._motion.log_message.connect(self._status_bar.showMessage)
         self._scan.log_message.connect(self._status_bar.showMessage)
 
     # ------------------------------------------------------------------
@@ -296,5 +301,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         # Propagate close to panels so they save QSettings and stop workers
         self._scan.closeEvent(event)
-        self._manual.closeEvent(event)
+        self._motion.closeEvent(event)
+        self._connection.closeEvent(event)
         super().closeEvent(event)  # type: ignore[misc]

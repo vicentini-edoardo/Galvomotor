@@ -31,10 +31,13 @@ def test_goto_center_resets() -> None:
     b = MockGalvoBackend()
     b.connect()
     b.move_relative(1000.0, -500.0)
+    b.move_z_relative(250.0)
     b.goto_center()
     x, y = b.read_xy_nm()
+    z = b.read_z_nm()
     assert abs(x) < 1e-9
     assert abs(y) < 1e-9
+    assert abs(z) < 1e-9
 
 
 def test_read_sample_shape() -> None:
@@ -61,8 +64,24 @@ def test_not_connected_raises() -> None:
     with pytest.raises(GalvoError):
         b.move_relative(1.0, 0.0)
     with pytest.raises(GalvoError):
+        b.move_z_relative(1.0)
+    with pytest.raises(GalvoError):
         b.read_xy_nm()
+    with pytest.raises(GalvoError):
+        b.read_z_nm()
     with pytest.raises(GalvoError):
         b.goto_center()
     with pytest.raises(GalvoError):
         b.read_sample()
+
+
+def test_z_motion_and_available_steps() -> None:
+    b = MockGalvoBackend()
+    b.connect()
+
+    assert b.available_xy_steps_nm() == (0.1, 1.0, 10.0, 100.0)
+    assert b.available_z_steps_nm() == (0.1, 1.0, 10.0, 100.0)
+
+    b.move_z_relative(10.0)
+
+    assert abs(b.read_z_nm() - 10.0) < 1e-9

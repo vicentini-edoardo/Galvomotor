@@ -31,7 +31,12 @@ except ImportError:
 
 import numpy as np
 
-from galvo_gui.motion.base import GalvoBackend, GalvoError, SnomSample
+from galvo_gui.motion.base import (
+    STANDARD_STEP_OPTIONS_NM,
+    GalvoBackend,
+    GalvoError,
+    SnomSample,
+)
 
 _N_HARMONICS = 6
 
@@ -59,8 +64,10 @@ class GalvoNeaBackend(GalvoBackend):
         self._loop: Any | None = None  # asyncio event loop
         self._context: Any | None = None  # neaspec.context (post-connect)
         self._stream_module: Any | None = None  # nea_tools.microscope.stream
+        self._mirror_cls: Any | None = None
         self._galvo: Any | None = None  # galvo_functions.Galvo instance
         self._gb511_wrap: Any | None = None  # CanonGB511 low-level wrapper
+        self._z0_nm: float = 0.0
 
     # ------------------------------------------------------------------
     # Connection
@@ -82,14 +89,17 @@ class GalvoNeaBackend(GalvoBackend):
         )
         # These imports only work after nea_tools.connect has loaded the SDK.
         import neaspec  # noqa: PLC0415
+        from nea_tools.microscope.motors import Mirror  # noqa: PLC0415
         from nea_tools.microscope import stream  # noqa: PLC0415
         self._context = neaspec.context
         self._stream_module = stream
+        self._mirror_cls = Mirror
 
         # Initialise galvo hardware (independent of neaSNOM connection).
         with _working_directory(_CONFIG_DIR):
             self._gb511_wrap, _status = _open_galvo(CalFn=_DEFAULT_CORRECTION_FILE)
         self._galvo = _GalvoHW(self._cal_path)
+        self._z0_nm = self._read_absolute_mirror_z_nm()
         self._connected = True
 
     def disconnect(self) -> None:
@@ -99,6 +109,7 @@ class GalvoNeaBackend(GalvoBackend):
         # ponytail: keep galvo_functions open — no close_galvo() in notebooks
         self._connected = False
         self._gb511_wrap = None
+        self._mirror_cls = None
 
     def is_connected(self) -> bool:
         return self._connected
@@ -113,6 +124,12 @@ class GalvoNeaBackend(GalvoBackend):
         x_nm, y_nm = self.read_xy_nm()
         self._galvo.Move(x_nm + dx_nm, y_nm + dy_nm, self._gb511_wrap)
 
+    def move_z_relative(self, dz_nm: float) -> None:
+        self._require_connected()
+        with self._open_mirror() as mirror:
+            mirror.go_relative(0, 0, dz_nm)
+            self._wait_for_mirror(mirror)
+
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
         self._require_connected()
@@ -123,10 +140,22 @@ class GalvoNeaBackend(GalvoBackend):
         y_nm = self._galvo.Bit2Pos(y_bit.value) - self._galvo.Y0
         return (float(x_nm), float(y_nm))
 
+    def read_z_nm(self) -> float:
+        self._require_connected()
+        return self._read_absolute_mirror_z_nm() - self._z0_nm
+
     def goto_center(self) -> None:
         """Move galvo back to centre (0, 0)."""
         self._require_connected()
         self._galvo.GoHome(self._gb511_wrap)
+
+    def available_xy_steps_nm(self) -> tuple[float, ...]:
+        self._require_connected()
+        return _available_xy_steps_nm(float(self._galvo.K))
+
+    def available_z_steps_nm(self) -> tuple[float, ...]:
+        self._require_connected()
+        return STANDARD_STEP_OPTIONS_NM
 
     # ------------------------------------------------------------------
     # Signal readout
@@ -218,10 +247,35 @@ class GalvoNeaBackend(GalvoBackend):
         if not self._connected:
             raise GalvoError("GalvoNeaBackend is not connected.")
 
+    def _read_absolute_mirror_z_nm(self) -> float:
+        with self._open_mirror() as mirror:
+            return float(mirror.absolute_position[2])
+
+    def _open_mirror(self):  # type: ignore[no-untyped-def]
+        self._require_connected_or_ready()
+        return self._mirror_cls()
+
+    def _require_connected_or_ready(self) -> None:
+        if self._mirror_cls is None:
+            raise GalvoError("Mirror controls are not available.")
+
+    def _wait_for_mirror(self, mirror: Any) -> None:
+        waiter = getattr(mirror, "await_async", None)
+        if waiter is not None:
+            self._loop.run_until_complete(waiter())
+
 
 def _resolve_repo_path(path_str: str) -> Path:
     path = Path(path_str).expanduser()
     return path if path.is_absolute() else (_REPO_ROOT / path).resolve()
+
+
+def _available_xy_steps_nm(k_bit_per_nm: float) -> tuple[float, ...]:
+    return tuple(
+        step_nm
+        for step_nm in STANDARD_STEP_OPTIONS_NM
+        if round(abs(step_nm) * k_bit_per_nm) >= 1
+    )
 
 
 @contextlib.contextmanager

@@ -9,6 +9,7 @@ from typing import Callable, Tuple
 import numpy as np
 
 _N_HARMONICS = 6
+STANDARD_STEP_OPTIONS_NM = (0.1, 1.0, 10.0, 100.0)
 
 
 class GalvoError(RuntimeError):
@@ -54,13 +55,33 @@ class GalvoBackend(ABC):
         ...
 
     @abstractmethod
+    def move_z_relative(self, dz_nm: float) -> None:
+        """Move the parabolic mirror along Z by *dz_nm* from its current position."""
+        ...
+
+    @abstractmethod
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return current galvo position (x, y) in nm relative to center."""
         ...
 
     @abstractmethod
+    def read_z_nm(self) -> float:
+        """Return current mirror Z position in nm relative to its startup reference."""
+        ...
+
+    @abstractmethod
     def goto_center(self) -> None:
         """Move galvo back to the center (0, 0) position."""
+        ...
+
+    @abstractmethod
+    def available_xy_steps_nm(self) -> tuple[float, ...]:
+        """Return the supported XY jog step sizes from STANDARD_STEP_OPTIONS_NM."""
+        ...
+
+    @abstractmethod
+    def available_z_steps_nm(self) -> tuple[float, ...]:
+        """Return the supported Z jog step sizes from STANDARD_STEP_OPTIONS_NM."""
         ...
 
     @abstractmethod

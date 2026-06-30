@@ -8,7 +8,12 @@ from typing import Callable, Tuple
 
 import numpy as np
 
-from galvo_gui.motion.base import GalvoBackend, GalvoError, SnomSample
+from galvo_gui.motion.base import (
+    STANDARD_STEP_OPTIONS_NM,
+    GalvoBackend,
+    GalvoError,
+    SnomSample,
+)
 
 _N_HARMONICS = 6
 
@@ -24,6 +29,7 @@ class MockGalvoBackend(GalvoBackend):
         self._connected = False
         self._x_nm: float = 0.0
         self._y_nm: float = 0.0
+        self._z_nm: float = 0.0
         self._rng = np.random.default_rng(seed)
 
     # ------------------------------------------------------------------
@@ -48,14 +54,29 @@ class MockGalvoBackend(GalvoBackend):
         self._x_nm += dx_nm
         self._y_nm += dy_nm
 
+    def move_z_relative(self, dz_nm: float) -> None:
+        self._require_connected()
+        self._z_nm += dz_nm
+
     def read_xy_nm(self) -> Tuple[float, float]:
         self._require_connected()
         return (self._x_nm, self._y_nm)
+
+    def read_z_nm(self) -> float:
+        self._require_connected()
+        return self._z_nm
 
     def goto_center(self) -> None:
         self._require_connected()
         self._x_nm = 0.0
         self._y_nm = 0.0
+        self._z_nm = 0.0
+
+    def available_xy_steps_nm(self) -> tuple[float, ...]:
+        return STANDARD_STEP_OPTIONS_NM
+
+    def available_z_steps_nm(self) -> tuple[float, ...]:
+        return STANDARD_STEP_OPTIONS_NM
 
     # ------------------------------------------------------------------
     # Signal readout

@@ -35,3 +35,7 @@ def test_move_relative_translates_to_home_relative_target() -> None:
     backend.move_relative(10.0, -20.0)
 
     assert backend._galvo.calls == [(110.0, 180.0, backend._gb511_wrap)]
+
+
+def test_available_xy_steps_disable_sub_resolution_moves() -> None:
+    assert galvo_nea._available_xy_steps_nm(1.79) == (1.0, 10.0, 100.0)
