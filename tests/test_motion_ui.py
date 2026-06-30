@@ -86,3 +86,36 @@ def test_motion_panel_persists_selected_steps(qapp: object) -> None:
 
     assert restored._xy_step_combo.currentText() == "10"
     assert restored._z_step_combo.currentText() == "1"
+
+
+def test_connection_panel_shows_canon_fields_only_for_canon_backend(qapp: object) -> None:
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+
+    panel = ConnectionPanel()
+    panel.show()
+    panel._backend_combo.setCurrentIndex(2)
+
+    assert panel._serial_port_edit.isVisible()
+    assert panel._board_index_edit.isVisible()
+    assert panel._program_file_edit.isVisible()
+    assert not panel._host_edit.isVisible()
+    assert not panel._cal_edit.isVisible()
+
+
+def test_connection_panel_persists_canon_settings(qapp: object) -> None:
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+
+    panel = ConnectionPanel()
+    panel._settings.clear()
+    panel._backend_combo.setCurrentIndex(2)
+    panel._serial_port_edit.setText("COM8")
+    panel._board_index_edit.setText("3")
+    panel._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
+    panel.save_settings()
+
+    restored = ConnectionPanel()
+
+    assert restored._backend_combo.currentIndex() == 2
+    assert restored._serial_port_edit.text() == "COM8"
+    assert restored._board_index_edit.text() == "3"
+    assert restored._program_file_edit.text() == r"C:\Canon\gb511_core0.hex"

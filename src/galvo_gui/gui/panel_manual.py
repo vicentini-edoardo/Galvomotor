@@ -56,6 +56,7 @@ class ConnectionPanel(QWidget):
         self._backend_combo = QComboBox()
         self._backend_combo.addItem("Mock (no hardware)")
         self._backend_combo.addItem("Real (galvo_functions + nea_tools)")
+        self._backend_combo.addItem("Canon (GC-211/212 + GB511)")
         self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         grid.addWidget(self._backend_combo, 0, 1, 1, 2)
 
@@ -76,19 +77,43 @@ class ConnectionPanel(QWidget):
             browse_btn,
         ]
 
+        grid.addWidget(QLabel("Serial port:"), 3, 0)
+        self._serial_port_edit = QLineEdit("")
+        grid.addWidget(self._serial_port_edit, 3, 1, 1, 2)
+
+        grid.addWidget(QLabel("Board index:"), 4, 0)
+        self._board_index_edit = QLineEdit("0")
+        grid.addWidget(self._board_index_edit, 4, 1, 1, 2)
+
+        grid.addWidget(QLabel("Program file:"), 5, 0)
+        self._program_file_edit = QLineEdit("")
+        grid.addWidget(self._program_file_edit, 5, 1, 1, 2)
+
+        self._canon_row_widgets = [
+            grid.itemAtPosition(3, 0).widget(),  # type: ignore[union-attr]
+            self._serial_port_edit,
+            grid.itemAtPosition(4, 0).widget(),  # type: ignore[union-attr]
+            self._board_index_edit,
+            grid.itemAtPosition(5, 0).widget(),  # type: ignore[union-attr]
+            self._program_file_edit,
+        ]
+
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setProperty("accent", True)
         self._connect_btn.clicked.connect(self._on_connect_toggle)
-        grid.addWidget(self._connect_btn, 3, 0, 1, 3)
+        grid.addWidget(self._connect_btn, 6, 0, 1, 3)
 
         self._on_backend_changed(0)
         return grp
 
     def _on_backend_changed(self, index: int) -> None:
         is_real = index == 1
+        is_canon = index == 2
         self._host_edit.setVisible(is_real)
         for widget in self._cal_row_widgets:
             widget.setVisible(is_real)
+        for widget in self._canon_row_widgets:
+            widget.setVisible(is_canon)
 
     def _browse_cal(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -112,7 +137,7 @@ class ConnectionPanel(QWidget):
         used_mock_fallback = False
         if index == 0:
             backend: GalvoBackend = MockGalvoBackend()
-        else:
+        elif index == 1:
             try:
                 from galvo_gui.motion.galvo_nea import GALVO_AVAILABLE, GalvoNeaBackend
             except ImportError:
@@ -126,6 +151,17 @@ class ConnectionPanel(QWidget):
                 used_mock_fallback = True
             else:
                 backend = GalvoNeaBackend(self._cal_edit.text())
+        else:
+            from galvo_gui.motion.canon.backend import CanonGalvoBackend
+
+            board_index = int(self._board_index_edit.text() or "0")
+            program_file = self._program_file_edit.text().strip() or None
+            serial_port = self._serial_port_edit.text().strip() or None
+            backend = CanonGalvoBackend(
+                board_index=board_index,
+                program_file=program_file,
+                serial_port=serial_port,
+            )
 
         try:
             host = self._host_edit.text().strip() or "nea-server"
@@ -178,12 +214,24 @@ class ConnectionPanel(QWidget):
         cal = s.value("cal_path", str(_DEFAULT_CAL_DIR))
         if isinstance(cal, str):
             self._cal_edit.setText(cal)
+        serial_port = s.value("canon_serial_port", "")
+        if isinstance(serial_port, str):
+            self._serial_port_edit.setText(serial_port)
+        board_index = s.value("canon_board_index", "0")
+        if isinstance(board_index, str):
+            self._board_index_edit.setText(board_index)
+        program_file = s.value("canon_program_file", "")
+        if isinstance(program_file, str):
+            self._program_file_edit.setText(program_file)
 
     def save_settings(self) -> None:
         s = self._settings
         s.setValue("backend_index", self._backend_combo.currentIndex())
         s.setValue("host", self._host_edit.text())
         s.setValue("cal_path", self._cal_edit.text())
+        s.setValue("canon_serial_port", self._serial_port_edit.text())
+        s.setValue("canon_board_index", self._board_index_edit.text())
+        s.setValue("canon_program_file", self._program_file_edit.text())
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
