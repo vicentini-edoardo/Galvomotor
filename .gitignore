@@ -57,3 +57,6 @@ pip-wheel-metadata/
 
 # Local instructions
 CLAUDE.md
+
+# Local git worktrees
+.worktrees/
