@@ -38,6 +38,10 @@ cal_files/
 *.dll
 *.so.*
 
+# Jupyter notebooks
+notebooks/
+*.ipynb
+
 # Data files produced by the application
 *.h5
 *.hdf5
