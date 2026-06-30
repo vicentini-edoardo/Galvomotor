@@ -17,25 +17,41 @@ def test_config_bundle_paths_point_to_repo_root() -> None:
     assert galvo_nea._DEFAULT_CORRECTION_FILE == "GM-2020-ftheta-10mm-fo4.tsc"
 
 
-def test_move_relative_accumulates_from_current_position() -> None:
-    """GUI jogs are current-relative even though galvo_functions.Move is home-relative."""
+def test_move_relative_bypasses_galvo_move_and_uses_bit_arithmetic() -> None:
+    """move_relative must bypass galvo_functions.Move (Xmax=1500 guard silently drops moves)
+    and operate directly in bit space: new_bit = current_bit + K * delta_nm."""
+
+    class FakeWrapper:
+        def __init__(self) -> None:
+            self.goto_calls: list[tuple[int, int]] = []
+            self._x_bit = 1000
+            self._y_bit = 2000
+
+        def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
+            x.value = self._x_bit  # type: ignore[attr-defined]
+            y.value = self._y_bit  # type: ignore[attr-defined]
+
+        def ctr_goto_xy(self, xb: int, yb: int) -> None:
+            self.goto_calls.append((xb, yb))
+            self._x_bit = xb
+            self._y_bit = yb
 
     class FakeGalvo:
-        def __init__(self) -> None:
-            self.calls: list[tuple[float, float, object]] = []
+        K = 1.79
 
-        def Move(self, x_nm: float, y_nm: float, wrapper: object) -> None:
-            self.calls.append((x_nm, y_nm, wrapper))
-
+    wrapper = FakeWrapper()
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
     backend._galvo = FakeGalvo()
-    backend._gb511_wrap = object()
-    backend.read_xy_nm = lambda: (100.0, 200.0)
+    backend._gb511_wrap = wrapper
 
-    backend.move_relative(10.0, -20.0)
+    backend.move_relative(100.0, -50.0)
+    backend.move_relative(100.0, 0.0)
 
-    assert backend._galvo.calls == [(110.0, 180.0, backend._gb511_wrap)]
+    assert wrapper.goto_calls == [
+        (round(1000 + 1.79 * 100.0), round(2000 + 1.79 * -50.0)),
+        (round(round(1000 + 1.79 * 100.0) + 1.79 * 100.0), round(round(2000 + 1.79 * -50.0) + 1.79 * 0.0)),
+    ]
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:

@@ -127,8 +127,16 @@ class GalvoNeaBackend(GalvoBackend):
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
         """Move galvo by (dx_nm, dy_nm) relative to current position."""
         self._require_connected()
-        x_nm, y_nm = self.read_xy_nm()
-        self._galvo.Move(x_nm + dx_nm, y_nm + dy_nm, self._gb511_wrap)
+        # Bypass galvo_functions.Galvo.Move: its Xmax=1500 nm guard silently
+        # drops any displacement that reads as > 1500 nm from home (including
+        # an uninitialised board returning 0 bits).  Direct bit arithmetic is
+        # identical logic without the broken guard.
+        x_bit = ctypes.c_long()
+        y_bit = ctypes.c_long()
+        self._gb511_wrap.ctr_get_current_xy_pos(x_bit, y_bit)
+        xb = round(x_bit.value + self._galvo.K * dx_nm)
+        yb = round(y_bit.value + self._galvo.K * dy_nm)
+        self._gb511_wrap.ctr_goto_xy(xb, yb)
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
