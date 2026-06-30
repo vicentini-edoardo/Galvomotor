@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.venv
+
+# Testing / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Lab-specific SDK artefacts (not redistributable)
+galvo_functions.py
+neaspec_functions.py
+cal_files/
+*.dll
+*.so.*
+
+# Data files produced by the application
+*.h5
+*.hdf5
+
+# Build / packaging
+*.whl
+*.tar.gz
+MANIFEST
+pip-wheel-metadata/
+
+# Local instructions
+CLAUDE.md

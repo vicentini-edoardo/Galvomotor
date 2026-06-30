@@ -1,0 +1,103 @@
+"""Backend contract and data types for galvo motor + SNOM signal readout."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Callable, Tuple
+
+import numpy as np
+
+_N_HARMONICS = 6
+
+
+class GalvoError(RuntimeError):
+    """Raised when a galvo or SNOM backend reports an unrecoverable error."""
+
+
+@dataclass
+class SnomSample:
+    """SNOM signals sampled at one galvo position."""
+
+    xy_nm: Tuple[float, float]   # galvo read-back position (nm from center)
+    o_amp: np.ndarray            # shape (6,) optical amplitude harmonics 0-5
+    o_phase: np.ndarray          # shape (6,) optical phase harmonics 0-5 (radians)
+
+
+class GalvoBackend(ABC):
+    """Abstract interface for galvo motor motion and neaSNOM signal readout.
+
+    All move calls are **relative** (nm) from the current position.
+    The galvo origin (0, 0) is the center position established at startup
+    or by the last ``goto_center`` / ``set_center`` call.
+    """
+
+    @abstractmethod
+    def connect(self, host: str = "nea-server") -> None:
+        """Open galvo hardware and neaSNOM connection.
+
+        *host*: hostname / IP of the neaSNOM server (ignored by mock).
+        """
+        ...
+
+    @abstractmethod
+    def disconnect(self) -> None:
+        """Release all hardware connections."""
+        ...
+
+    @abstractmethod
+    def is_connected(self) -> bool: ...
+
+    @abstractmethod
+    def move_relative(self, dx_nm: float, dy_nm: float) -> None:
+        """Move galvo by (dx_nm, dy_nm) from current position."""
+        ...
+
+    @abstractmethod
+    def read_xy_nm(self) -> Tuple[float, float]:
+        """Return current galvo position (x, y) in nm relative to center."""
+        ...
+
+    @abstractmethod
+    def goto_center(self) -> None:
+        """Move galvo back to the center (0, 0) position."""
+        ...
+
+    @abstractmethod
+    def read_sample(self, t_integ_s: float = 0.05) -> SnomSample:
+        """Read one snapshot of neaSNOM optical signals at the current position.
+
+        *t_integ_s*: signal integration window in seconds (stream averaging).
+        """
+        ...
+
+    @abstractmethod
+    def scan(
+        self,
+        dx_nm: float,
+        dy_nm: float,
+        nb_x: int,
+        nb_y: int,
+        twait: float,
+        t_integ_s: float,
+        on_point: Callable[[int, int, SnomSample], None],
+        stop_check: Callable[[], bool],
+    ) -> None:
+        """Run a 2-D raster scan centred on the current galvo position.
+
+        Moves in a left-to-right raster pattern (like the lab notebooks):
+        starts at (-dx/2, -dy/2), steps right across each row, then steps
+        down one row and returns to the left edge.  Returns to centre when
+        done (or when *stop_check* returns True).
+
+        Args:
+            dx_nm:      total scan range in x (nm)
+            dy_nm:      total scan range in y (nm)
+            nb_x:       pixels in x
+            nb_y:       pixels in y
+            twait:      sleep time (s) after each move before reading
+            t_integ_s:  signal integration window (s) per pixel
+            on_point:   callback(ix, iy, sample) called after each pixel read
+            stop_check: callable returning True to request early stop
+        """
+        ...

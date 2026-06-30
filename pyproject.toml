@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "galvo-gui"
+version = "0.1.0"
+description = "Galvo motor control and SNOM scan GUI for neaSNOM microscope"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+dependencies = [
+    "PyQt6>=6.4,<7",
+    "pyqtgraph>=0.13,<0.14",
+    "numpy>=1.24,<3",
+    "h5py>=3.9,<4",
+]
+
+[project.optional-dependencies]
+snom = ["nea_tools", "nest_asyncio>=1.6,<2"]
+dev = ["pytest>=7", "pytest-qt", "ruff", "mypy"]
+
+[project.scripts]
+galvo-gui = "galvo_gui.__main__:main"
+
+[project.gui-scripts]
+galvo-gui-w = "galvo_gui.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# UP006/UP007/UP035: allow typing.Tuple etc. for py38 clarity; all annotations are
+# string-evaluated via `from __future__ import annotations` anyway.
+ignore = ["UP006", "UP007", "UP035", "SIM108"]
+
+[tool.mypy]
+python_version = "3.8"
+ignore_missing_imports = true
+files = ["src/galvo_gui/motion", "src/galvo_gui/io", "src/galvo_gui/workers"]
