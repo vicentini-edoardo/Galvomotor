@@ -190,6 +190,7 @@ class ManualPanel(QWidget):
         from galvo_gui.motion.mock import MockGalvoBackend
 
         index = self._backend_combo.currentIndex()
+        used_mock_fallback = False
         if index == 0:
             backend: GalvoBackend = MockGalvoBackend()
         else:
@@ -204,6 +205,7 @@ class ManualPanel(QWidget):
                     "Using Mock instead."
                 )
                 backend = MockGalvoBackend()
+                used_mock_fallback = True
             else:
                 backend = GalvoNeaBackend(self._cal_edit.text())
 
@@ -224,7 +226,12 @@ class ManualPanel(QWidget):
         self._set_controls_enabled(True)
         self._pos_timer.start()
         self._refresh_position()
-        name = "Mock" if index == 0 else "Real"
+        if index == 0:
+            name = "Mock"
+        elif used_mock_fallback:
+            name = "Mock (fallback)"
+        else:
+            name = "Real"
         self._log.append_line(f"Connected ({name} backend).")
         self.log_message.emit(f"Galvo connected ({name})")
         self.backend_connected.emit(self._backend)
