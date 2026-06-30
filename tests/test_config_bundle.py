@@ -41,7 +41,7 @@ def test_available_xy_steps_disable_sub_resolution_moves() -> None:
     assert galvo_nea._available_xy_steps_nm(1.79) == (1.0, 10.0, 100.0)
 
 
-def test_mirror_session_is_reused_across_z_reads_and_moves() -> None:
+def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
     class FakeMirror:
         instances = 0
 
@@ -50,6 +50,12 @@ def test_mirror_session_is_reused_across_z_reads_and_moves() -> None:
             self.absolute_position = [0.0, 0.0, 100.0]
             self.relative_moves: list[tuple[float, float, float]] = []
 
+        def __enter__(self) -> "FakeMirror":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
         def go_relative(self, dx: float, dy: float, dz: float) -> None:
             self.relative_moves.append((dx, dy, dz))
             self.absolute_position[2] += dz
@@ -57,11 +63,12 @@ def test_mirror_session_is_reused_across_z_reads_and_moves() -> None:
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
     backend._mirror_cls = FakeMirror
-    backend._mirror = None
     backend._loop = None
     backend._z0_nm = 100.0
+    backend._z_nm = 0.0
 
     assert backend.read_z_nm() == 0.0
+    assert FakeMirror.instances == 0
     backend.move_z_relative(25.0)
     assert backend.read_z_nm() == 25.0
     assert FakeMirror.instances == 1
