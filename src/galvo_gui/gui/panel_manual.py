@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import QSettings, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -19,6 +21,8 @@ from PyQt6.QtWidgets import (
 
 from galvo_gui.gui.widgets import LogView, ReadoutLabel
 from galvo_gui.motion.base import GalvoBackend, GalvoError
+
+_DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 
 
 class ManualPanel(QWidget):
@@ -84,7 +88,7 @@ class ManualPanel(QWidget):
 
         # Cal files path (real backend only)
         grid.addWidget(QLabel("Cal files:"), 2, 0)
-        self._cal_edit = QLineEdit("galvomotor/cal_files")
+        self._cal_edit = QLineEdit(str(_DEFAULT_CAL_DIR))
         grid.addWidget(self._cal_edit, 2, 1)
         browse_btn = QPushButton("…")
         browse_btn.setFixedWidth(30)
@@ -313,7 +317,7 @@ class ManualPanel(QWidget):
         host = s.value("host", "nea-server")
         if isinstance(host, str):
             self._host_edit.setText(host)
-        cal = s.value("cal_path", "galvomotor/cal_files")
+        cal = s.value("cal_path", str(_DEFAULT_CAL_DIR))
         if isinstance(cal, str):
             self._cal_edit.setText(cal)
         step = s.value("step_nm", 100.0)

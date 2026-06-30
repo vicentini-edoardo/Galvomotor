@@ -51,6 +51,24 @@ def test_scan_returns_to_center() -> None:
     assert abs(y) < 1e-6
 
 
+def test_scan_hits_requested_edges() -> None:
+    """Scan coordinates should span the full requested range, inclusive."""
+    backend = MockGalvoBackend()
+    backend.connect()
+
+    coords: list[tuple[float, float]] = []
+
+    def on_point(ix: int, iy: int, sample: object) -> None:
+        coords.append(sample.xy_nm)
+
+    backend.scan(400.0, 200.0, 5, 3, 0.0, 0.001, on_point, lambda: False)
+
+    xs = sorted({round(x, 6) for x, _ in coords})
+    ys = sorted({round(y, 6) for _, y in coords})
+    assert xs == [-200.0, -100.0, 0.0, 100.0, 200.0]
+    assert ys == [-100.0, 0.0, 100.0]
+
+
 def test_scan_sample_decay_with_distance() -> None:
     """O2 amplitude at centre > O2 at far corner (gaussian spot)."""
     backend = MockGalvoBackend(seed=0)

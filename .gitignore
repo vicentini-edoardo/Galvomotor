@@ -37,6 +37,9 @@ neaspec_functions.py
 cal_files/
 *.dll
 *.so.*
+config_files/**
+!config_files/.gitignore
+!config_files/README.md
 
 # Jupyter notebooks
 notebooks/

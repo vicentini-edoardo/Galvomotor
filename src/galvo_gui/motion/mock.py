@@ -103,8 +103,8 @@ class MockGalvoBackend(GalvoBackend):
         time.sleep(twait)
         x_start, y_start = self.read_xy_nm()
 
-        step_x = dx_nm / nb_x
-        step_y = dy_nm / nb_y
+        step_x = dx_nm / (nb_x - 1) if nb_x > 1 else 0.0
+        step_y = dy_nm / (nb_y - 1) if nb_y > 1 else 0.0
 
         for iy in range(nb_y):
             for ix in range(nb_x):
@@ -120,10 +120,11 @@ class MockGalvoBackend(GalvoBackend):
             if stop_check():
                 break
 
-            # End of row: return x to start, step y
-            x_curr, y_curr = self.read_xy_nm()
-            self.move_relative(x_start - x_curr, step_y)
-            time.sleep(twait)
+            if iy < nb_y - 1:
+                # End of row: return x to start, step y
+                x_curr, _ = self.read_xy_nm()
+                self.move_relative(x_start - x_curr, step_y)
+                time.sleep(twait)
 
         # Return to centre
         self.goto_center()

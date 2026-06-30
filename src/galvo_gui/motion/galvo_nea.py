@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import os
+from pathlib import Path
+import sys
 import time
 from typing import Any, Callable, Tuple
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CONFIG_DIR = _REPO_ROOT / "config_files"
+_DEFAULT_CAL_FILES_PATH = _CONFIG_DIR / "cal_files"
+_DEFAULT_CORRECTION_FILE = "GM-2020-ftheta-10mm-fo4.tsc"
+
+if str(_CONFIG_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONFIG_DIR))
 
 try:
     import asyncio
@@ -35,19 +47,20 @@ class GalvoNeaBackend(GalvoBackend):
     Import-guarded: instantiation raises GalvoError if libs are missing.
     """
 
-    def __init__(self, cal_files_path: str = "galvomotor/cal_files") -> None:
+    def __init__(self, cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH)) -> None:
         if not GALVO_AVAILABLE:
             raise GalvoError(
                 "galvo_functions or nea_tools not available. "
                 "Ensure galvo_functions.py is on sys.path and run: "
                 "pip install nea_tools nest_asyncio"
             )
-        self._cal_path = cal_files_path
+        self._cal_path = str(_resolve_repo_path(cal_files_path))
         self._connected = False
         self._loop: Any | None = None  # asyncio event loop
         self._context: Any | None = None  # neaspec.context (post-connect)
         self._stream_module: Any | None = None  # nea_tools.microscope.stream
         self._galvo: Any | None = None  # galvo_functions.Galvo instance
+        self._gb511_wrap: Any | None = None  # CanonGB511 low-level wrapper
 
     # ------------------------------------------------------------------
     # Connection
@@ -74,7 +87,8 @@ class GalvoNeaBackend(GalvoBackend):
         self._stream_module = stream
 
         # Initialise galvo hardware (independent of neaSNOM connection).
-        _open_galvo()
+        with _working_directory(_CONFIG_DIR):
+            self._gb511_wrap, _status = _open_galvo(CalFn=_DEFAULT_CORRECTION_FILE)
         self._galvo = _GalvoHW(self._cal_path)
         self._connected = True
 
@@ -84,6 +98,7 @@ class GalvoNeaBackend(GalvoBackend):
                 nea_tools.disconnect()
         # ponytail: keep galvo_functions open — no close_galvo() in notebooks
         self._connected = False
+        self._gb511_wrap = None
 
     def is_connected(self) -> bool:
         return self._connected
@@ -95,19 +110,23 @@ class GalvoNeaBackend(GalvoBackend):
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
         """Move galvo by (dx_nm, dy_nm) relative to current position."""
         self._require_connected()
-        self._galvo.Move(dx_nm, dy_nm)
+        x_nm, y_nm = self.read_xy_nm()
+        self._galvo.Move(x_nm + dx_nm, y_nm + dy_nm, self._gb511_wrap)
 
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
         self._require_connected()
-        pos = self._galvo.Read()  # returns (x, y)
-        return (float(pos[0]), float(pos[1]))
+        x_bit = ctypes.c_long()
+        y_bit = ctypes.c_long()
+        self._gb511_wrap.ctr_get_current_xy_pos(x_bit, y_bit)
+        x_nm = self._galvo.Bit2Pos(x_bit.value) - self._galvo.X0
+        y_nm = self._galvo.Bit2Pos(y_bit.value) - self._galvo.Y0
+        return (float(x_nm), float(y_nm))
 
     def goto_center(self) -> None:
         """Move galvo back to centre (0, 0)."""
         self._require_connected()
-        x, y = self.read_xy_nm()
-        self._galvo.Move(-x, -y)
+        self._galvo.GoHome(self._gb511_wrap)
 
     # ------------------------------------------------------------------
     # Signal readout
@@ -161,11 +180,11 @@ class GalvoNeaBackend(GalvoBackend):
         """Raster scan. Mirrors notebook scan_galvo() with galvo.Read() for coordinates."""
         self._require_connected()
 
-        step_x = dx_nm / nb_x
-        step_y = dy_nm / nb_y
+        step_x = dx_nm / (nb_x - 1) if nb_x > 1 else 0.0
+        step_y = dy_nm / (nb_y - 1) if nb_y > 1 else 0.0
 
         # Move to start corner (-dx/2, -dy/2) relative to current centre.
-        self._galvo.Move(-dx_nm / 2.0, -dy_nm / 2.0)
+        self.move_relative(-dx_nm / 2.0, -dy_nm / 2.0)
         time.sleep(twait)
         x_start, y_start = self.read_xy_nm()  # actual position after quantisation
 
@@ -178,16 +197,17 @@ class GalvoNeaBackend(GalvoBackend):
                 on_point(ix, iy, sample)
 
                 if ix < nb_x - 1:
-                    self._galvo.Move(step_x, 0.0)
+                    self.move_relative(step_x, 0.0)
                     time.sleep(twait)
 
             if stop_check():
                 break
 
-            # End of row: correct back to x_start, step y down.
-            x_curr, _ = self.read_xy_nm()
-            self._galvo.Move(x_start - x_curr, step_y)
-            time.sleep(twait)
+            if iy < nb_y - 1:
+                # End of row: correct back to x_start, step y down.
+                x_curr, _ = self.read_xy_nm()
+                self.move_relative(x_start - x_curr, step_y)
+                time.sleep(twait)
 
         # Return to centre.
         self.goto_center()
@@ -197,3 +217,18 @@ class GalvoNeaBackend(GalvoBackend):
     def _require_connected(self) -> None:
         if not self._connected:
             raise GalvoError("GalvoNeaBackend is not connected.")
+
+
+def _resolve_repo_path(path_str: str) -> Path:
+    path = Path(path_str).expanduser()
+    return path if path.is_absolute() else (_REPO_ROOT / path).resolve()
+
+
+@contextlib.contextmanager
+def _working_directory(path: Path):  # type: ignore[no-untyped-def]
+    old_cwd = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)
