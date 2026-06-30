@@ -65,6 +65,8 @@ class GalvoNeaBackend(GalvoBackend):
         self._context: Any | None = None  # neaspec.context (post-connect)
         self._stream_module: Any | None = None  # nea_tools.microscope.stream
         self._mirror_cls: Any | None = None
+        self._mirror: Any | None = None
+        self._mirror_owner: Any | None = None
         self._galvo: Any | None = None  # galvo_functions.Galvo instance
         self._gb511_wrap: Any | None = None  # CanonGB511 low-level wrapper
         self._z0_nm: float = 0.0
@@ -109,6 +111,7 @@ class GalvoNeaBackend(GalvoBackend):
         # ponytail: keep galvo_functions open — no close_galvo() in notebooks
         self._connected = False
         self._gb511_wrap = None
+        self._close_mirror()
         self._mirror_cls = None
 
     def is_connected(self) -> bool:
@@ -126,9 +129,9 @@ class GalvoNeaBackend(GalvoBackend):
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
-        with self._open_mirror() as mirror:
-            mirror.go_relative(0, 0, dz_nm)
-            self._wait_for_mirror(mirror)
+        mirror = self._get_mirror()
+        mirror.go_relative(0, 0, dz_nm)
+        self._wait_for_mirror(mirror)
 
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
@@ -248,16 +251,39 @@ class GalvoNeaBackend(GalvoBackend):
             raise GalvoError("GalvoNeaBackend is not connected.")
 
     def _read_absolute_mirror_z_nm(self) -> float:
-        with self._open_mirror() as mirror:
-            return float(mirror.absolute_position[2])
+        return float(self._get_mirror().absolute_position[2])
 
-    def _open_mirror(self):  # type: ignore[no-untyped-def]
+    def _get_mirror(self):  # type: ignore[no-untyped-def]
         self._require_connected_or_ready()
-        return self._mirror_cls()
+        if self._mirror is not None:
+            return self._mirror
+
+        owner = self._mirror_cls()
+        enter = getattr(owner, "__enter__", None)
+        self._mirror_owner = owner
+        self._mirror = enter() if callable(enter) else owner
+        return self._mirror
 
     def _require_connected_or_ready(self) -> None:
         if self._mirror_cls is None:
             raise GalvoError("Mirror controls are not available.")
+
+    def _close_mirror(self) -> None:
+        if self._mirror_owner is None:
+            self._mirror = None
+            return
+
+        exit_fn = getattr(self._mirror_owner, "__exit__", None)
+        if callable(exit_fn):
+            with contextlib.suppress(Exception):
+                exit_fn(None, None, None)
+        else:
+            close_fn = getattr(self._mirror_owner, "close", None)
+            if callable(close_fn):
+                with contextlib.suppress(Exception):
+                    close_fn()
+        self._mirror = None
+        self._mirror_owner = None
 
     def _wait_for_mirror(self, mirror: Any) -> None:
         waiter = getattr(mirror, "await_async", None)
