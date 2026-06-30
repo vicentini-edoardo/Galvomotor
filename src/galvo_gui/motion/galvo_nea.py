@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import inspect
 import os
 from pathlib import Path
 import sys
@@ -105,13 +106,16 @@ class GalvoNeaBackend(GalvoBackend):
         self._connected = True
 
     def disconnect(self) -> None:
-        if self._connected:
-            with contextlib.suppress(Exception):
-                nea_tools.disconnect()
+        was_connected = self._connected
         # ponytail: keep galvo_functions open — no close_galvo() in notebooks
         self._connected = False
         self._gb511_wrap = None
         self._mirror_cls = None
+        if was_connected:
+            with contextlib.suppress(Exception):
+                disconnect_result = nea_tools.disconnect()
+                if inspect.isawaitable(disconnect_result) and self._loop is not None:
+                    self._loop.run_until_complete(disconnect_result)
 
     def is_connected(self) -> bool:
         return self._connected

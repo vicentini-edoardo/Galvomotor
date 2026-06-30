@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from galvo_gui.motion import galvo_nea
 
@@ -72,3 +73,36 @@ def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
     backend.move_z_relative(25.0)
     assert backend.read_z_nm() == 25.0
     assert FakeMirror.instances == 1
+
+
+def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:
+    awaited = {"disconnect_called": False, "run_until_complete_called": False}
+
+    async def fake_disconnect() -> None:
+        awaited["disconnect_called"] = True
+
+    class FakeLoop:
+        def run_until_complete(self, awaitable):
+            awaited["run_until_complete_called"] = True
+            import asyncio
+
+            return asyncio.run(awaitable)
+
+    monkeypatch.setattr(
+        galvo_nea,
+        "nea_tools",
+        SimpleNamespace(disconnect=fake_disconnect),
+        raising=False,
+    )
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._loop = FakeLoop()
+    backend._gb511_wrap = object()
+    backend._mirror_cls = object()
+
+    backend.disconnect()
+
+    assert awaited["run_until_complete_called"] is True
+    assert awaited["disconnect_called"] is True
+    assert backend._connected is False
