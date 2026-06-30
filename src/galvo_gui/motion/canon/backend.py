@@ -70,10 +70,10 @@ class CanonGalvoBackend(GalvoBackend):
 
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
         self._require_connected()
-        x_nm, y_nm = self.read_xy_nm()
+        x_bits, y_bits = self._motion.read_target_xy_bits()
         self._motion.update_positions(
-            int((x_nm + dx_nm) / self._bit_scale_nm),
-            int((y_nm + dy_nm) / self._bit_scale_nm),
+            int(x_bits + (dx_nm / self._bit_scale_nm)),
+            int(y_bits + (dy_nm / self._bit_scale_nm)),
         )
 
     def move_z_relative(self, dz_nm: float) -> None:

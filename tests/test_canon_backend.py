@@ -63,6 +63,13 @@ class FakeMotion:
         self.calls.append(("read_current_xy_bits",))
         return (123, -456)
 
+    def read_target_xy_bits(self):
+        self.calls.append(("read_target_xy_bits",))
+        return (123, -456)
+
+    def update_positions(self, x_bits: int, y_bits: int) -> None:
+        self.calls.append(("update_positions", x_bits, y_bits))
+
 
 def test_connect_runs_canon_startup_sequence_in_order() -> None:
     rs = FakeRS232()
@@ -111,6 +118,37 @@ def test_disconnect_runs_reverse_sequence() -> None:
         ("disconnect",),
     ]
     assert motion.calls[-2:] == [("stop",), ("shutdown",)]
+
+
+def test_move_relative_accumulates_from_target_position_not_stale_current_position() -> None:
+    class MotionWithStaleCurrent(FakeMotion):
+        def __init__(self) -> None:
+            super().__init__()
+            self.target = (0, 0)
+
+        def read_current_xy_bits(self):
+            self.calls.append(("read_current_xy_bits",))
+            return (0, 0)
+
+        def read_target_xy_bits(self):
+            self.calls.append(("read_target_xy_bits",))
+            return self.target
+
+        def update_positions(self, x_bits: int, y_bits: int) -> None:
+            self.calls.append(("update_positions", x_bits, y_bits))
+            self.target = (x_bits, y_bits)
+
+    motion = MotionWithStaleCurrent()
+    backend = CanonGalvoBackend(rs232=FakeRS232(), motion=motion, bit_scale_nm=1.0)
+    backend._connected = True
+
+    backend.move_relative(100.0, 0.0)
+    backend.move_relative(100.0, 0.0)
+
+    assert [call for call in motion.calls if call[0] == "update_positions"] == [
+        ("update_positions", 100, 0),
+        ("update_positions", 200, 0),
+    ]
 
 
 def test_scan_is_rejected_for_canon_backend() -> None:

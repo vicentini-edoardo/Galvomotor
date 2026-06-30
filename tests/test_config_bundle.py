@@ -17,8 +17,8 @@ def test_config_bundle_paths_point_to_repo_root() -> None:
     assert galvo_nea._DEFAULT_CORRECTION_FILE == "GM-2020-ftheta-10mm-fo4.tsc"
 
 
-def test_move_relative_passes_relative_delta_to_galvo() -> None:
-    """galvo_functions.Move already expects a relative displacement."""
+def test_move_relative_accumulates_from_current_position() -> None:
+    """GUI jogs are current-relative even though galvo_functions.Move is home-relative."""
 
     class FakeGalvo:
         def __init__(self) -> None:
@@ -31,10 +31,11 @@ def test_move_relative_passes_relative_delta_to_galvo() -> None:
     backend._connected = True
     backend._galvo = FakeGalvo()
     backend._gb511_wrap = object()
+    backend.read_xy_nm = lambda: (100.0, 200.0)
 
     backend.move_relative(10.0, -20.0)
 
-    assert backend._galvo.calls == [(10.0, -20.0, backend._gb511_wrap)]
+    assert backend._galvo.calls == [(110.0, 180.0, backend._gb511_wrap)]
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:
