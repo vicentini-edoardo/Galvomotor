@@ -455,7 +455,13 @@ class MotionPanel(QWidget):
             and self._backend is not None
             and self._backend.is_connected()
         )
-        for btn in (self._btn_up, self._btn_down, self._btn_left, self._btn_right, self._btn_center):
+        for btn in (
+            self._btn_up,
+            self._btn_down,
+            self._btn_left,
+            self._btn_right,
+            self._btn_center,
+        ):
             btn.setEnabled(enable_xy)
         for btn in (self._btn_z_up, self._btn_z_down):
             btn.setEnabled(enable_z)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable
 
 from serial import Serial
 from serial.tools import list_ports
@@ -33,7 +33,7 @@ class CanonRS232:
     def __init__(
         self,
         serial_factory: Callable[..., Serial] = Serial,
-        port_selector: Optional[Callable[[], str]] = None,
+        port_selector: Callable[[], str] | None = None,
     ) -> None:
         self._serial_factory = serial_factory
         self._port_selector = port_selector or self.auto_detect_port

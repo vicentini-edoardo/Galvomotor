@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Callable
 
 from galvo_gui.motion.base import STANDARD_STEP_OPTIONS_NM, GalvoBackend, GalvoError, SnomSample
@@ -111,7 +112,8 @@ class CanonGalvoBackend(GalvoBackend):
         stop_check: Callable[[], bool],
     ) -> None:
         raise GalvoError(
-            "Canon motion is available, but scan imaging is disabled until a signal-readout source is added."
+            "Canon motion is available, but scan imaging is disabled "
+            "until a signal-readout source is added."
         )
 
     def _require_connected(self) -> None:
@@ -119,13 +121,9 @@ class CanonGalvoBackend(GalvoBackend):
             raise GalvoError("Canon backend is not connected.")
 
     def _safe_disconnect_serial(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._rs232.disconnect()
-        except Exception:
-            pass
 
     def _safe_shutdown_motion(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._motion.shutdown()
-        except Exception:
-            pass
