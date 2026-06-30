@@ -127,8 +127,7 @@ class GalvoNeaBackend(GalvoBackend):
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
         """Move galvo by (dx_nm, dy_nm) relative to current position."""
         self._require_connected()
-        x_nm, y_nm = self.read_xy_nm()
-        self._galvo.Move(x_nm + dx_nm, y_nm + dy_nm, self._gb511_wrap)
+        self._galvo.Move(dx_nm, dy_nm, self._gb511_wrap)
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
