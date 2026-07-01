@@ -10,6 +10,7 @@ import numpy as np
 
 from galvo_gui.motion.base import (
     STANDARD_STEP_OPTIONS_NM,
+    Z_STEP_OPTIONS_NM,
     GalvoBackend,
     GalvoError,
     SnomSample,
@@ -76,7 +77,7 @@ class MockGalvoBackend(GalvoBackend):
         return STANDARD_STEP_OPTIONS_NM
 
     def available_z_steps_nm(self) -> tuple[float, ...]:
-        return STANDARD_STEP_OPTIONS_NM
+        return Z_STEP_OPTIONS_NM
 
     # ------------------------------------------------------------------
     # Signal readout

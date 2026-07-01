@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from galvo_gui.motion import galvo_nea
+from galvo_gui.motion.base import GalvoError
 
 
 def test_config_bundle_paths_point_to_repo_root() -> None:
@@ -58,6 +61,59 @@ def test_available_xy_steps_disable_sub_resolution_moves() -> None:
     assert galvo_nea._available_xy_steps_nm(1.79) == (1.0, 10.0, 100.0)
 
 
+def test_read_gb511_bits_passes_byref_to_raw_dll_handles(monkeypatch) -> None:
+    """Raw ctypes DLL handles must receive pointers, not c_long values:
+    passing by value leaves the out-params at 0 bits forever."""
+
+    class FakeDll:
+        def ctr_get_current_xy_pos(self, x_ref: object, y_ref: object) -> int:
+            # byref() products expose the wrapped object as ._obj
+            x_ref._obj.value = 1234  # type: ignore[attr-defined]
+            y_ref._obj.value = -567  # type: ignore[attr-defined]
+            return 0
+
+    monkeypatch.setattr(galvo_nea, "_is_raw_dll", lambda obj: True)
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._gb511_wrap = FakeDll()
+
+    assert backend._read_gb511_bits() == (1234, -567)
+
+
+def test_gb511_nonzero_return_code_raises_galvo_error() -> None:
+    class FakeWrapper:
+        def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
+            x.value = 0  # type: ignore[attr-defined]
+            y.value = 0  # type: ignore[attr-defined]
+
+        def ctr_goto_xy(self, xb: int, yb: int) -> int:
+            return 5  # board refuses the command
+
+    class FakeGalvo:
+        K = 1.79
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = FakeGalvo()
+    backend._gb511_wrap = FakeWrapper()
+
+    with pytest.raises(GalvoError, match="ctr_goto_xy failed with code 5"):
+        backend.move_relative(100.0, 0.0)
+
+
+def test_gb511_native_exception_wrapped_as_galvo_error() -> None:
+    class FakeWrapper:
+        def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
+            raise OSError("exception: access violation writing 0x0000000000000000")
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._gb511_wrap = FakeWrapper()
+
+    with pytest.raises(GalvoError, match="ctr_get_current_xy_pos failed"):
+        backend._read_gb511_bits()
+
+
 def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
     class FakeMirror:
         instances = 0
@@ -89,6 +145,34 @@ def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
     backend.move_z_relative(25.0)
     assert backend.read_z_nm() == 25.0
     assert FakeMirror.instances == 1
+
+
+def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
+    """If the mirror stalls, the GUI must see the real position, not dead reckoning."""
+
+    class StalledMirror:
+        def __init__(self) -> None:
+            self.absolute_position = [0.0, 0.0, 100.0]
+
+        def __enter__(self) -> StalledMirror:
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def go_relative(self, dx: float, dy: float, dz: float) -> None:
+            pass  # motor never moves
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._mirror_cls = StalledMirror
+    backend._loop = None
+    backend._z0_nm = 100.0
+    backend._z_nm = 0.0
+
+    backend.move_z_relative(500.0)
+
+    assert backend.read_z_nm() == 0.0
 
 
 def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:

@@ -20,7 +20,11 @@ from PyQt6.QtWidgets import (
 )
 
 from galvo_gui.gui.widgets import LogView, ReadoutLabel
-from galvo_gui.motion.base import STANDARD_STEP_OPTIONS_NM, GalvoBackend, GalvoError
+from galvo_gui.motion.base import (
+    STANDARD_STEP_OPTIONS_NM,
+    Z_STEP_OPTIONS_NM,
+    GalvoBackend,
+)
 
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 
@@ -166,7 +170,7 @@ class ConnectionPanel(QWidget):
         try:
             host = self._host_edit.text().strip() or "nea-server"
             backend.connect(host)
-        except GalvoError as exc:
+        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self._log.append_line(f"Connection failed: {exc}")
             return
 
@@ -249,6 +253,7 @@ class MotionPanel(QWidget):
         super().__init__(parent)
         self._backend: GalvoBackend | None = None
         self._locked = False
+        self._last_position_error: str | None = None
         self._settings = QSettings("galvo_gui", "MotionPanel")
         self._build_ui()
         self._restore_settings()
@@ -272,11 +277,11 @@ class MotionPanel(QWidget):
 
         step_row = QHBoxLayout()
         step_row.addWidget(QLabel("XY step (nm):"))
-        self._xy_step_combo = self._build_step_combo()
+        self._xy_step_combo = self._build_step_combo(STANDARD_STEP_OPTIONS_NM, "100")
         step_row.addWidget(self._xy_step_combo)
         step_row.addSpacing(12)
         step_row.addWidget(QLabel("Z step (nm):"))
-        self._z_step_combo = self._build_step_combo()
+        self._z_step_combo = self._build_step_combo(Z_STEP_OPTIONS_NM, "1000")
         step_row.addWidget(self._z_step_combo)
         step_row.addStretch()
         vbox.addLayout(step_row)
@@ -342,11 +347,11 @@ class MotionPanel(QWidget):
         grid.addWidget(self._z_label, 2, 1)
         return grp
 
-    def _build_step_combo(self) -> QComboBox:
+    def _build_step_combo(self, options: tuple[float, ...], default: str) -> QComboBox:
         combo = QComboBox()
-        for step_nm in STANDARD_STEP_OPTIONS_NM:
+        for step_nm in options:
             combo.addItem(f"{step_nm:g}")
-        combo.setCurrentText("100")
+        combo.setCurrentText(default)
         return combo
 
     def set_backend(self, backend: GalvoBackend) -> None:
@@ -371,7 +376,7 @@ class MotionPanel(QWidget):
         try:
             self._backend.move_relative(sign_x * step_nm, sign_y * step_nm)
             self._refresh_position()
-        except GalvoError as exc:
+        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Move error: {exc}")
 
     def _jog_z(self, sign_z: int) -> None:
@@ -381,7 +386,7 @@ class MotionPanel(QWidget):
         try:
             self._backend.move_z_relative(sign_z * step_nm)
             self._refresh_position()
-        except GalvoError as exc:
+        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Z move error: {exc}")
 
     def _goto_center(self) -> None:
@@ -390,7 +395,7 @@ class MotionPanel(QWidget):
         try:
             self._backend.goto_center()
             self._refresh_position()
-        except GalvoError as exc:
+        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Center error: {exc}")
 
     def _refresh_position(self) -> None:
@@ -399,8 +404,16 @@ class MotionPanel(QWidget):
         try:
             x_nm, y_nm = self._backend.read_xy_nm()
             z_nm = self._backend.read_z_nm()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # Report once per distinct failure instead of spamming the 500 ms
+            # timer — but never fail silently: an invisible read error is how
+            # a dead board masquerades as "connected but not moving".
+            msg = f"Position read error: {exc}"
+            if msg != self._last_position_error:
+                self._last_position_error = msg
+                self.log_message.emit(msg)
             return
+        self._last_position_error = None
         self._x_label.setText(f"{x_nm:.0f}")
         self._y_label.setText(f"{y_nm:.0f}")
         self._z_label.setText(f"{z_nm:.0f}")
@@ -470,7 +483,7 @@ class MotionPanel(QWidget):
 
     def _restore_settings(self) -> None:
         xy_step = self._settings.value("xy_step_nm", "100")
-        z_step = self._settings.value("z_step_nm", "100")
+        z_step = self._settings.value("z_step_nm", "1000")
         if isinstance(xy_step, str):
             self._xy_step_combo.setCurrentText(xy_step)
         if isinstance(z_step, str):
