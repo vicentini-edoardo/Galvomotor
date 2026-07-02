@@ -292,6 +292,30 @@ def test_move_z_relative_captures_reference_lazily() -> None:
     assert FakeMirror.instances == 2
 
 
+def test_open_mirror_binds_backend_loop(monkeypatch) -> None:
+    calls: list[object] = []
+
+    class FakeLoop:
+        def is_closed(self) -> bool:
+            return False
+
+    class FakeMirror:
+        def __init__(self) -> None:
+            calls.append("mirror")
+
+    monkeypatch.setattr(galvo_nea.asyncio, "set_event_loop", lambda loop: calls.append(loop))
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._loop = FakeLoop()
+    backend._mirror_cls = FakeMirror
+
+    mirror = backend._open_mirror()
+
+    assert isinstance(mirror, FakeMirror)
+    assert isinstance(calls[0], FakeLoop)
+    assert calls[1] == "mirror"
+
+
 def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
     """If the mirror stalls, the GUI must see the real position, not dead reckoning."""
 

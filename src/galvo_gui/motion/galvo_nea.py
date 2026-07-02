@@ -265,14 +265,18 @@ class GalvoNeaBackend(GalvoBackend):
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
+        self._report_status(f"Starting Z move by {dz_nm:g} nm.")
         self._ensure_z_reference()
+        self._report_status("Opening mirror control...")
         with self._open_mirror() as mirror:
+            self._report_status("Sending mirror relative move...")
             mirror.go_relative(0, 0, dz_nm)
             self._wait_for_mirror(mirror)
             # Read back the hardware position so the GUI reports what the
             # mirror actually did, not what we asked for.
             z_abs_nm = float(mirror.absolute_position[2])
         self._z_nm = z_abs_nm - self._z0_nm
+        self._report_status(f"Z move complete; live Z = {self._z_nm:g} nm.")
 
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
@@ -482,6 +486,7 @@ class GalvoNeaBackend(GalvoBackend):
         return result
 
     def _read_absolute_mirror_z_nm(self) -> float:
+        self._bind_loop_to_current_thread()
         with self._open_mirror() as mirror:
             return float(mirror.absolute_position[2])
 
@@ -496,6 +501,7 @@ class GalvoNeaBackend(GalvoBackend):
 
     def _open_mirror(self):  # type: ignore[no-untyped-def]
         self._require_connected_or_ready()
+        self._bind_loop_to_current_thread()
         return self._mirror_cls()
 
     def _require_connected_or_ready(self) -> None:
@@ -505,7 +511,16 @@ class GalvoNeaBackend(GalvoBackend):
     def _wait_for_mirror(self, mirror: Any) -> None:
         waiter = getattr(mirror, "await_async", None)
         if waiter is not None:
+            self._bind_loop_to_current_thread()
             self._loop.run_until_complete(waiter())
+
+    def _bind_loop_to_current_thread(self) -> None:
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return
+        with contextlib.suppress(Exception):
+            if not loop.is_closed():
+                asyncio.set_event_loop(loop)
 
 
 def _is_raw_dll(obj: Any) -> bool:
