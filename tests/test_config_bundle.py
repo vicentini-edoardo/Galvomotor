@@ -265,15 +265,12 @@ def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
     assert backend.read_z_nm() == 0.0
 
 
-def test_disconnect_awaits_nea_tools_and_leaves_the_loop_open(monkeypatch) -> None:
-    """The loop must survive the disconnect: neaspec/nea_tools capture it at
-    first import, and the next session must present it again or mirror waits
-    (Z moves) hang forever after a reconnect."""
-    awaited = {
-        "disconnect_called": False,
-        "run_until_complete_called": False,
-        "loop_closed": False,
-    }
+def test_disconnect_keeps_the_nea_session_alive(monkeypatch) -> None:
+    """Regression: nea_tools cannot re-connect inside one process — after a
+    nea_tools.disconnect(), the next session hangs in the mirror path (Z
+    reference read at connect, or the first Z move). A GUI disconnect must
+    therefore leave the SDK session untouched; it dies with the process."""
+    awaited = {"disconnect_called": False, "loop_closed": False}
 
     async def fake_disconnect() -> None:
         awaited["disconnect_called"] = True
@@ -281,12 +278,6 @@ def test_disconnect_awaits_nea_tools_and_leaves_the_loop_open(monkeypatch) -> No
     class FakeLoop:
         def __init__(self) -> None:
             self._closed = False
-
-        def run_until_complete(self, awaitable):
-            awaited["run_until_complete_called"] = True
-            import asyncio
-
-            return asyncio.run(awaitable)
 
         def is_closed(self) -> bool:
             return self._closed
@@ -304,14 +295,14 @@ def test_disconnect_awaits_nea_tools_and_leaves_the_loop_open(monkeypatch) -> No
 
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
+    backend._status_callback = None
     backend._loop = FakeLoop()
     backend._gb511_wrap = object()
     backend._mirror_cls = object()
 
     backend.disconnect()
 
-    assert awaited["run_until_complete_called"] is True
-    assert awaited["disconnect_called"] is True
+    assert awaited["disconnect_called"] is False  # session left live on purpose
     assert awaited["loop_closed"] is False
     assert backend._connected is False
     assert backend._loop is None
@@ -380,19 +371,23 @@ def test_open_galvo_hardware_reuses_the_board_handle_across_reconnects(monkeypat
     assert len(open_calls) == 2
 
 
-def test_reconnect_reuses_the_process_event_loop(monkeypatch) -> None:
-    """Regression: each session used to build (and close) its own asyncio
-    loop. neaspec/nea_tools capture the loop current at their first import,
-    so the second session's mirror waits hung on the first session's dead
-    loop and the first Z jog froze the app. One loop per process."""
+def test_reconnect_adopts_the_live_nea_session(monkeypatch) -> None:
+    """Regression: nea_tools does not survive disconnect→connect inside one
+    process — the second session hung in the mirror path (Z reference read
+    at connect, or the first Z move). The session opened first must stay
+    live and be adopted, without another nea_tools.connect, by every later
+    connection to the same host."""
 
     import sys
 
+    connect_calls: list[str] = []
+    disconnect_calls: list[bool] = []
+
     async def fake_connect(host, fingerprint=None, path_to_dll=""):
-        return None
+        connect_calls.append(host)
 
     async def fake_disconnect():
-        return None
+        disconnect_calls.append(True)
 
     applied: list[object] = []
     monkeypatch.setattr(
@@ -404,10 +399,19 @@ def test_reconnect_reuses_the_process_event_loop(monkeypatch) -> None:
     monkeypatch.setattr(
         galvo_nea, "nest_asyncio", SimpleNamespace(apply=applied.append), raising=False
     )
-    monkeypatch.setattr(galvo_nea, "_BACKEND_LOOP", None)
+    fresh_session = {
+        "loop": None,
+        "host": None,
+        "connected": False,
+        "context": None,
+        "stream": None,
+        "mirror_cls": None,
+    }
+    monkeypatch.setattr(galvo_nea, "_NEA_SESSION", fresh_session)
 
+    mirror_cls = object
     microscope = SimpleNamespace(
-        stream=SimpleNamespace(), motors=SimpleNamespace(Mirror=object)
+        stream=SimpleNamespace(), motors=SimpleNamespace(Mirror=mirror_cls)
     )
     monkeypatch.setitem(sys.modules, "neaspec", SimpleNamespace(context=object()))
     monkeypatch.setitem(sys.modules, "nea_tools", SimpleNamespace(microscope=microscope))
@@ -420,16 +424,27 @@ def test_reconnect_reuses_the_process_event_loop(monkeypatch) -> None:
     first._connect_nea_session("nea-host")
     loop = first._loop
     assert loop is not None and not loop.is_closed()
+    assert connect_calls == ["nea-host"]
 
     first._disconnect_nea_session()
-    assert not loop.is_closed()  # survives the disconnect
+    assert disconnect_calls == []  # session left live on purpose
+    assert not loop.is_closed()
 
     second = object.__new__(galvo_nea.GalvoNeaBackend)  # reconnect
     second._status_callback = None
     second._connect_nea_session("nea-host")
 
+    assert connect_calls == ["nea-host"]  # no second nea_tools.connect
     assert second._loop is loop
+    assert second._mirror_cls is mirror_cls  # SDK objects adopted
     assert applied == [loop]  # nest_asyncio applied exactly once
+
+    # A different host is the one case that really tears down and reconnects.
+    third = object.__new__(galvo_nea.GalvoNeaBackend)
+    third._status_callback = None
+    third._connect_nea_session("other-host")
+    assert disconnect_calls == [True]
+    assert connect_calls == ["nea-host", "other-host"]
 
     loop.close()  # test hygiene only; the app keeps it open
 
