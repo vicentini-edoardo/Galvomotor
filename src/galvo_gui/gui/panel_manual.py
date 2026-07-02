@@ -77,6 +77,8 @@ class ConnectionPanel(QWidget):
         self._op_thread: QThread | None = None
         self._op_runner: _BackendOpRunner | None = None
         self._op_busy = False
+        self._op_success_callback: Callable[[], None] | None = None
+        self._op_failure_callback: Callable[[str], None] | None = None
         self._pending_backend: GalvoBackend | None = None
         self._pending_name = ""
         self._settings = QSettings("galvo_gui", "ManualPanel")
@@ -289,24 +291,9 @@ class ConnectionPanel(QWidget):
         if runner is None:
             on_failure("Internal error: backend worker unavailable.")
             return
-
-        def cleanup_callbacks() -> None:
-            with contextlib.suppress(TypeError):
-                runner.succeeded.disconnect(handle_success)
-            with contextlib.suppress(TypeError):
-                runner.failed.disconnect(handle_failure)
-
-        def handle_success() -> None:
-            cleanup_callbacks()
-            on_success()
-
-        def handle_failure(message: str) -> None:
-            cleanup_callbacks()
-            on_failure(message)
-
         self._op_busy = True
-        runner.succeeded.connect(handle_success)
-        runner.failed.connect(handle_failure)
+        self._op_success_callback = on_success
+        self._op_failure_callback = on_failure
         runner.set_op(op)
         QMetaObject.invokeMethod(
             runner,
@@ -325,6 +312,8 @@ class ConnectionPanel(QWidget):
         thread = QThread(self)
         runner = _BackendOpRunner()
         runner.moveToThread(thread)
+        runner.succeeded.connect(self._handle_op_succeeded)
+        runner.failed.connect(self._handle_op_failed)
         thread.finished.connect(runner.deleteLater)
         thread.start()
         self._op_thread = thread
@@ -339,6 +328,22 @@ class ConnectionPanel(QWidget):
         thread.quit()
         with contextlib.suppress(RuntimeError):
             thread.wait(5000)
+
+    @pyqtSlot()
+    def _handle_op_succeeded(self) -> None:
+        callback = self._op_success_callback
+        self._op_success_callback = None
+        self._op_failure_callback = None
+        if callback is not None:
+            callback()
+
+    @pyqtSlot(str)
+    def _handle_op_failed(self, message: str) -> None:
+        callback = self._op_failure_callback
+        self._op_success_callback = None
+        self._op_failure_callback = None
+        if callback is not None:
+            callback(message)
 
     def _set_button_state(self, text: str, accent: bool, enabled: bool) -> None:
         self._connect_btn.setText(text)
