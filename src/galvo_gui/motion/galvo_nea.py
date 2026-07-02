@@ -6,10 +6,20 @@ import contextlib
 import ctypes
 import inspect
 import os
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Tuple
+
+import numpy as np
+
+from galvo_gui.motion.base import (
+    STANDARD_STEP_OPTIONS_NM,
+    Z_STEP_OPTIONS_NM,
+    GalvoBackend,
+    GalvoError,
+    SnomSample,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONFIG_DIR = _REPO_ROOT / "config_files"
@@ -30,17 +40,10 @@ try:
 except ImportError:
     GALVO_AVAILABLE = False
 
-import numpy as np
-
-from galvo_gui.motion.base import (
-    STANDARD_STEP_OPTIONS_NM,
-    Z_STEP_OPTIONS_NM,
-    GalvoBackend,
-    GalvoError,
-    SnomSample,
-)
-
 _N_HARMONICS = 6
+# Give the galvo time to act on a Move before the read-back that detects
+# silently dropped moves (galvo settling is sub-ms; this covers DLL latency).
+_MOVE_SETTLE_S = 0.05
 
 
 class GalvoNeaBackend(GalvoBackend):
@@ -63,12 +66,14 @@ class GalvoNeaBackend(GalvoBackend):
             )
         self._cal_path = str(_resolve_repo_path(cal_files_path))
         self._connected = False
-        self._loop: Any | None = None  # asyncio event loop
-        self._context: Any | None = None  # neaspec.context (post-connect)
-        self._stream_module: Any | None = None  # nea_tools.microscope.stream
-        self._mirror_cls: Any | None = None
-        self._galvo: Any | None = None  # galvo_functions.Galvo instance
-        self._gb511_wrap: Any | None = None  # CanonGB511 low-level wrapper
+        # Duck-typed SDK/DLL handles (None until connect); Any keeps mypy out
+        # of vendor attribute lookups like Galvo.Move or stream.Stream.
+        self._loop: Any = None  # asyncio event loop
+        self._context: Any = None  # neaspec.context (post-connect)
+        self._stream_module: Any = None  # nea_tools.microscope.stream
+        self._mirror_cls: Any = None
+        self._galvo: Any = None  # galvo_functions.Galvo instance
+        self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
         self._z0_nm: float = 0.0
         self._z_nm: float = 0.0
 
@@ -92,8 +97,8 @@ class GalvoNeaBackend(GalvoBackend):
         )
         # These imports only work after nea_tools.connect has loaded the SDK.
         import neaspec  # noqa: PLC0415
-        from nea_tools.microscope.motors import Mirror  # noqa: PLC0415
         from nea_tools.microscope import stream  # noqa: PLC0415
+        from nea_tools.microscope.motors import Mirror  # noqa: PLC0415
         self._context = neaspec.context
         self._stream_module = stream
         self._mirror_cls = Mirror
@@ -131,15 +136,34 @@ class GalvoNeaBackend(GalvoBackend):
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
         """Move galvo by (dx_nm, dy_nm) relative to current position."""
         self._require_connected()
-        # Bypass galvo_functions.Galvo.Move: its Xmax=1500 nm guard silently
-        # drops any displacement that reads as > 1500 nm from home (including
-        # an uninitialised board returning 0 bits).  Direct bit arithmetic is
-        # identical logic without the broken guard.
-        xb, yb = self._read_gb511_bits()
-        self._goto_gb511_bits(
-            round(xb + self._galvo.K * dx_nm),
-            round(yb + self._galvo.K * dy_nm),
-        )
+        # Motion must go through galvo_functions.Galvo.Move — the vendor
+        # wrapper the lab notebooks raster with.  Calling ctr_goto_xy on the
+        # raw DLL with a guessed prototype mis-routes the axis arguments:
+        # on hardware both X and Y jogs drove the same mirror with
+        # inconsistent step sizes.  Move's Xmax guard can still silently
+        # drop a move, so verify with a position read-back instead of
+        # bypassing the vendor call path.
+        expected_dx_bits = round(self._galvo.K * dx_nm)
+        expected_dy_bits = round(self._galvo.K * dy_nm)
+        xb_before, yb_before = self._read_gb511_bits()
+        try:
+            self._galvo.Move(dx_nm, dy_nm, self._gb511_wrap)
+        except GalvoError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise GalvoError(f"Galvo.Move failed: {exc}") from exc
+        if expected_dx_bits == 0 and expected_dy_bits == 0:
+            return
+        time.sleep(_MOVE_SETTLE_S)
+        xb_after, yb_after = self._read_gb511_bits()
+        if (xb_after, yb_after) == (xb_before, yb_before):
+            raise GalvoError(
+                f"Galvo.Move({dx_nm:g}, {dy_nm:g}) produced no motion: bits stayed at "
+                f"({xb_before}, {yb_before}), expected a change of about "
+                f"({expected_dx_bits:+d}, {expected_dy_bits:+d}) bits. "
+                "galvo_functions' Xmax guard may have dropped the move — "
+                "recenter with GoHome (⊙) and retry."
+            )
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
@@ -287,9 +311,6 @@ class GalvoNeaBackend(GalvoBackend):
             args = (x_bit, y_bit)
         self._call_gb511("ctr_get_current_xy_pos", *args)
         return (int(x_bit.value), int(y_bit.value))
-
-    def _goto_gb511_bits(self, x_bits: int, y_bits: int) -> None:
-        self._call_gb511("ctr_goto_xy", int(x_bits), int(y_bits))
 
     def _call_gb511(self, name: str, *args: Any) -> Any:
         """Call a GB511 function, translating failures into GalvoError.

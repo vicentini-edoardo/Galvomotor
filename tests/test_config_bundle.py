@@ -15,46 +15,91 @@ def test_config_bundle_paths_point_to_repo_root() -> None:
     """Real backend defaults should resolve from the repo root."""
     repo_root = Path(__file__).resolve().parents[1]
 
-    assert galvo_nea._CONFIG_DIR == repo_root / "config_files"
-    assert galvo_nea._DEFAULT_CAL_FILES_PATH == repo_root / "config_files" / "cal_files"
+    assert repo_root / "config_files" == galvo_nea._CONFIG_DIR
+    assert repo_root / "config_files" / "cal_files" == galvo_nea._DEFAULT_CAL_FILES_PATH
     assert galvo_nea._DEFAULT_CORRECTION_FILE == "GM-2020-ftheta-10mm-fo4.tsc"
 
 
-def test_move_relative_bypasses_galvo_move_and_uses_bit_arithmetic() -> None:
-    """move_relative must bypass galvo_functions.Move (Xmax=1500 guard silently drops moves)
-    and operate directly in bit space: new_bit = current_bit + K * delta_nm."""
+class _FakeWrapper:
+    """Raw-DLL stand-in whose bit positions only vendor Move may change."""
 
-    class FakeWrapper:
-        def __init__(self) -> None:
-            self.goto_calls: list[tuple[int, int]] = []
-            self._x_bit = 1000
-            self._y_bit = 2000
+    def __init__(self) -> None:
+        self._x_bit = 1000
+        self._y_bit = 2000
 
-        def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
-            x.value = self._x_bit  # type: ignore[attr-defined]
-            y.value = self._y_bit  # type: ignore[attr-defined]
+    def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
+        x.value = self._x_bit  # type: ignore[attr-defined]
+        y.value = self._y_bit  # type: ignore[attr-defined]
 
-        def ctr_goto_xy(self, xb: int, yb: int) -> None:
-            self.goto_calls.append((xb, yb))
-            self._x_bit = xb
-            self._y_bit = yb
 
-    class FakeGalvo:
-        K = 1.79
+class _FakeGalvo:
+    """Vendor galvo_functions.Galvo stand-in: Move(dx, dy, wrap) is relative."""
 
-    wrapper = FakeWrapper()
+    K = 1.79
+
+    def __init__(self, drop_moves: bool = False) -> None:
+        self.move_calls: list[tuple[float, float, object]] = []
+        self._drop_moves = drop_moves
+
+    def Move(self, dx_nm: float, dy_nm: float, wrap: object) -> None:  # noqa: N802
+        self.move_calls.append((dx_nm, dy_nm, wrap))
+        if self._drop_moves:
+            return  # Xmax guard: silently ignores the request
+        wrap._x_bit += round(self.K * dx_nm)  # type: ignore[attr-defined]
+        wrap._y_bit += round(self.K * dy_nm)  # type: ignore[attr-defined]
+
+
+def test_move_relative_delegates_to_vendor_move(monkeypatch) -> None:
+    """move_relative must go through galvo_functions.Galvo.Move: driving the raw
+    DLL's ctr_goto_xy with a guessed prototype mis-routed the axis arguments
+    (both X and Y jogs moved the same mirror with inconsistent step sizes)."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    wrapper = _FakeWrapper()
+    galvo = _FakeGalvo()
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
-    backend._galvo = FakeGalvo()
+    backend._galvo = galvo
     backend._gb511_wrap = wrapper
 
     backend.move_relative(100.0, -50.0)
     backend.move_relative(100.0, 0.0)
 
-    assert wrapper.goto_calls == [
-        (round(1000 + 1.79 * 100.0), round(2000 + 1.79 * -50.0)),
-        (round(round(1000 + 1.79 * 100.0) + 1.79 * 100.0), round(round(2000 + 1.79 * -50.0) + 1.79 * 0.0)),
+    assert galvo.move_calls == [
+        (100.0, -50.0, wrapper),
+        (100.0, 0.0, wrapper),
     ]
+    assert (wrapper._x_bit, wrapper._y_bit) == (
+        1000 + 2 * round(1.79 * 100.0),
+        2000 + round(1.79 * -50.0),
+    )
+
+
+def test_move_relative_raises_when_vendor_move_silently_drops(monkeypatch) -> None:
+    """Galvo.Move's Xmax guard drops moves without an error; the backend must
+    detect the missing motion via read-back and raise instead of no-oping."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo(drop_moves=True)
+    backend._gb511_wrap = _FakeWrapper()
+
+    with pytest.raises(GalvoError, match="produced no motion"):
+        backend.move_relative(100.0, 0.0)
+
+
+def test_move_relative_skips_readback_for_sub_bit_moves(monkeypatch) -> None:
+    """A requested step below 1 bit cannot be verified by read-back and must
+    not be reported as a dropped move."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo(drop_moves=True)
+    backend._gb511_wrap = _FakeWrapper()
+
+    backend.move_relative(0.1, 0.0)  # 0.179 bits — rounds to zero
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:
@@ -82,23 +127,15 @@ def test_read_gb511_bits_passes_byref_to_raw_dll_handles(monkeypatch) -> None:
 
 def test_gb511_nonzero_return_code_raises_galvo_error() -> None:
     class FakeWrapper:
-        def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
-            x.value = 0  # type: ignore[attr-defined]
-            y.value = 0  # type: ignore[attr-defined]
-
-        def ctr_goto_xy(self, xb: int, yb: int) -> int:
+        def ctr_get_current_xy_pos(self, x: object, y: object) -> int:
             return 5  # board refuses the command
-
-    class FakeGalvo:
-        K = 1.79
 
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
-    backend._galvo = FakeGalvo()
     backend._gb511_wrap = FakeWrapper()
 
-    with pytest.raises(GalvoError, match="ctr_goto_xy failed with code 5"):
-        backend.move_relative(100.0, 0.0)
+    with pytest.raises(GalvoError, match="ctr_get_current_xy_pos failed with code 5"):
+        backend._read_gb511_bits()
 
 
 def test_gb511_native_exception_wrapped_as_galvo_error() -> None:
@@ -123,7 +160,7 @@ def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
             self.absolute_position = [0.0, 0.0, 100.0]
             self.relative_moves: list[tuple[float, float, float]] = []
 
-        def __enter__(self) -> "FakeMirror":
+        def __enter__(self) -> FakeMirror:
             return self
 
         def __exit__(self, exc_type, exc, tb) -> None:

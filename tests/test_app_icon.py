@@ -24,7 +24,7 @@ def qapp():  # type: ignore[no-untyped-def]
 def test_load_app_icon_uses_repo_icon(qapp: object) -> None:
     icon = app_main._load_app_icon()
 
-    assert app_main._ICON_PATH == Path(__file__).resolve().parents[1] / "icon.ico"
+    assert Path(__file__).resolve().parents[1] / "icon.ico" == app_main._ICON_PATH
     assert app_main._ICON_PATH.exists()
     assert not icon.isNull()
 

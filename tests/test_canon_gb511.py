@@ -77,7 +77,9 @@ def test_initialize_auto_loads_program_file_from_config_files(tmp_path, monkeypa
     assert fake.calls[-1] == ("ctr_load_program_file", str(default_program_file).encode("mbcs"))
 
 
-def test_initialize_skips_program_file_when_not_found_in_config_files(tmp_path, monkeypatch) -> None:
+def test_initialize_skips_program_file_when_not_found_in_config_files(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(gb511, "_DEFAULT_PROGRAM_FILE_PATH", tmp_path / "missing.hex")
     fake = FakeDll()
     motion = GB511MotionController(dll_loader=lambda _: fake)

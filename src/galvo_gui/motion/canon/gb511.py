@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from galvo_gui.motion.base import GalvoError
 
@@ -20,7 +20,7 @@ class GB511MotionController:
     ) -> None:
         self._dll_path = dll_path
         self._dll_loader = dll_loader
-        self._dll = None
+        self._dll: Any = None
         self._started = False
 
     def initialize(self, board_index: int = 0, program_file: str | None = None) -> None:
