@@ -41,9 +41,18 @@ except ImportError:
     GALVO_AVAILABLE = False
 
 _N_HARMONICS = 6
-# Give the galvo time to act on a Move before the read-back that detects
+# Give the galvo time to act on a move before the read-back that detects
 # silently dropped moves (galvo settling is sub-ms; this covers DLL latency).
 _MOVE_SETTLE_S = 0.05
+
+# The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
+# fine "read" pulses, while ctr_goto_xy expects coarser command units.  The
+# conversion (goto units per read pulse) comes from galvo_move() in the
+# working lab notebook (260220 - Galvo-Parabolic-snom-scan.ipynb, CX/CY).
+# galvo_functions.Galvo.Move/GoHome omit this conversion and command targets
+# ~9x out of range, railing one axis against its limit — do not use them.
+_GOTO_PER_READ_X = 0.11080
+_GOTO_PER_READ_Y = 0.11080
 
 
 class GalvoNeaBackend(GalvoBackend):
@@ -134,35 +143,31 @@ class GalvoNeaBackend(GalvoBackend):
     # ------------------------------------------------------------------
 
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
-        """Move galvo by (dx_nm, dy_nm) relative to current position."""
+        """Move galvo by (dx_nm, dy_nm) relative to current position.
+
+        Replicates the working notebook's scan() pattern exactly: read the
+        current position in read pulses, add the displacement (K [pulse/nm]
+        from the galvocal file), and command the absolute target through the
+        galvo_move() unit conversion.  galvo_functions.Galvo.Move is not used:
+        it is absolute-from-home (repeated jogs would not accumulate) and it
+        skips the goto-unit conversion (targets land ~9x out of range).
+        """
         self._require_connected()
-        # Motion must go through galvo_functions.Galvo.Move — the vendor
-        # wrapper the lab notebooks raster with.  Calling ctr_goto_xy on the
-        # raw DLL with a guessed prototype mis-routes the axis arguments:
-        # on hardware both X and Y jogs drove the same mirror with
-        # inconsistent step sizes.  Move's Xmax guard can still silently
-        # drop a move, so verify with a position read-back instead of
-        # bypassing the vendor call path.
-        expected_dx_bits = round(self._galvo.K * dx_nm)
-        expected_dy_bits = round(self._galvo.K * dy_nm)
         xb_before, yb_before = self._read_gb511_bits()
-        try:
-            self._galvo.Move(dx_nm, dy_nm, self._gb511_wrap)
-        except GalvoError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise GalvoError(f"Galvo.Move failed: {exc}") from exc
-        if expected_dx_bits == 0 and expected_dy_bits == 0:
-            return
+        moved = self._goto_read_units(
+            xb_before + self._galvo.K * dx_nm,
+            yb_before + self._galvo.K * dy_nm,
+            ref=(xb_before, yb_before),
+        )
+        if not moved:
+            return  # displacement below the goto-unit resolution
         time.sleep(_MOVE_SETTLE_S)
         xb_after, yb_after = self._read_gb511_bits()
         if (xb_after, yb_after) == (xb_before, yb_before):
             raise GalvoError(
-                f"Galvo.Move({dx_nm:g}, {dy_nm:g}) produced no motion: bits stayed at "
-                f"({xb_before}, {yb_before}), expected a change of about "
-                f"({expected_dx_bits:+d}, {expected_dy_bits:+d}) bits. "
-                "galvo_functions' Xmax guard may have dropped the move — "
-                "recenter with GoHome (⊙) and retry."
+                f"Galvo move ({dx_nm:g}, {dy_nm:g}) nm produced no motion: read-back "
+                f"stayed at ({xb_before}, {yb_before}) pulses. The axis may be at its "
+                "range limit — recenter with GoHome (⊙) and retry."
             )
 
     def move_z_relative(self, dz_nm: float) -> None:
@@ -188,13 +193,19 @@ class GalvoNeaBackend(GalvoBackend):
         return self._z_nm
 
     def goto_center(self) -> None:
-        """Move galvo back to centre (0, 0)."""
+        """Move galvo back to the calibrated home position."""
         self._require_connected()
-        self._galvo.GoHome(self._gb511_wrap)
+        # Not Galvo.GoHome: it feeds read-unit pulses straight into
+        # ctr_goto_xy without the goto-unit conversion (see _GOTO_PER_READ_X).
+        self._goto_read_units(
+            self._galvo.K * self._galvo.X0,
+            self._galvo.K * self._galvo.Y0,
+        )
 
     def available_xy_steps_nm(self) -> tuple[float, ...]:
         self._require_connected()
-        return _available_xy_steps_nm(float(self._galvo.K))
+        # A step is usable only if it changes the coarser goto-unit target.
+        return _available_xy_steps_nm(float(self._galvo.K) * _GOTO_PER_READ_X)
 
     def available_z_steps_nm(self) -> tuple[float, ...]:
         self._require_connected()
@@ -311,6 +322,27 @@ class GalvoNeaBackend(GalvoBackend):
             args = (x_bit, y_bit)
         self._call_gb511("ctr_get_current_xy_pos", *args)
         return (int(x_bit.value), int(y_bit.value))
+
+    def _goto_read_units(
+        self,
+        x_read: float,
+        y_read: float,
+        ref: Tuple[int, int] | None = None,
+    ) -> bool:
+        """Command an absolute target given in read pulses (notebook galvo_move).
+
+        Returns False when the target quantises onto the goto-unit position of
+        *ref* (the current position, read if not supplied), i.e. the request is
+        below the board's command resolution and no motion can be expected.
+        """
+        gx = int(_GOTO_PER_READ_X * x_read)
+        gy = int(_GOTO_PER_READ_Y * y_read)
+        xb_now, yb_now = ref if ref is not None else self._read_gb511_bits()
+        self._call_gb511("ctr_goto_xy", gx, gy)
+        return (gx, gy) != (
+            int(_GOTO_PER_READ_X * xb_now),
+            int(_GOTO_PER_READ_Y * yb_now),
+        )
 
     def _call_gb511(self, name: str, *args: Any) -> Any:
         """Call a GB511 function, translating failures into GalvoError.
