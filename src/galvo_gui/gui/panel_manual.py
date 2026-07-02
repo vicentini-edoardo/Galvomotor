@@ -91,6 +91,7 @@ class ConnectionPanel(QWidget):
 
         grid.addWidget(QLabel("Program file:"), 5, 0)
         self._program_file_edit = QLineEdit("")
+        self._program_file_edit.setPlaceholderText("blank = config_files/gbdsp.hex")
         grid.addWidget(self._program_file_edit, 5, 1, 1, 2)
 
         self._canon_row_widgets = [
