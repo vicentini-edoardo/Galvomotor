@@ -80,7 +80,7 @@ def test_z_motion_and_available_steps() -> None:
     b.connect()
 
     assert b.available_xy_steps_nm() == (0.1, 1.0, 10.0, 100.0)
-    assert b.available_z_steps_nm() == (0.1, 1.0, 10.0, 100.0)
+    assert b.available_z_steps_nm() == (10.0, 100.0, 1000.0, 10000.0)
 
     b.move_z_relative(10.0)
 

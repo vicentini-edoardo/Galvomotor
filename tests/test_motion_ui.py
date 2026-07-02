@@ -40,10 +40,10 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
         "100",
     ]
     assert [panel._z_step_combo.itemText(i) for i in range(panel._z_step_combo.count())] == [
-        "0.1",
-        "1",
         "10",
         "100",
+        "1000",
+        "10000",
     ]
     assert panel._btn_z_up.text() == "▲"
     assert panel._btn_z_down.text() == "▼"
@@ -79,13 +79,13 @@ def test_motion_panel_persists_selected_steps(qapp: object) -> None:
     panel = MotionPanel()
     panel._settings.clear()
     panel._xy_step_combo.setCurrentText("10")
-    panel._z_step_combo.setCurrentText("1")
+    panel._z_step_combo.setCurrentText("10000")
     panel.save_settings()
 
     restored = MotionPanel()
 
     assert restored._xy_step_combo.currentText() == "10"
-    assert restored._z_step_combo.currentText() == "1"
+    assert restored._z_step_combo.currentText() == "10000"
 
 
 def test_connection_panel_shows_canon_fields_only_for_canon_backend(qapp: object) -> None:

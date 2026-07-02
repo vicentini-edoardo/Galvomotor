@@ -34,6 +34,7 @@ import numpy as np
 
 from galvo_gui.motion.base import (
     STANDARD_STEP_OPTIONS_NM,
+    Z_STEP_OPTIONS_NM,
     GalvoBackend,
     GalvoError,
     SnomSample,
@@ -101,6 +102,9 @@ class GalvoNeaBackend(GalvoBackend):
         with _working_directory(_CONFIG_DIR):
             self._gb511_wrap, _status = _open_galvo(CalFn=_DEFAULT_CORRECTION_FILE)
         self._galvo = _GalvoHW(self._cal_path)
+        # Fail loudly now if the board rejects position reads, instead of
+        # connecting into a dead board that silently ignores every move.
+        self._read_gb511_bits()
         self._z0_nm = self._read_absolute_mirror_z_nm()
         self._z_nm = 0.0
         self._connected = True
@@ -131,28 +135,28 @@ class GalvoNeaBackend(GalvoBackend):
         # drops any displacement that reads as > 1500 nm from home (including
         # an uninitialised board returning 0 bits).  Direct bit arithmetic is
         # identical logic without the broken guard.
-        x_bit = ctypes.c_long()
-        y_bit = ctypes.c_long()
-        self._gb511_wrap.ctr_get_current_xy_pos(x_bit, y_bit)
-        xb = round(x_bit.value + self._galvo.K * dx_nm)
-        yb = round(y_bit.value + self._galvo.K * dy_nm)
-        self._gb511_wrap.ctr_goto_xy(xb, yb)
+        xb, yb = self._read_gb511_bits()
+        self._goto_gb511_bits(
+            round(xb + self._galvo.K * dx_nm),
+            round(yb + self._galvo.K * dy_nm),
+        )
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
         with self._open_mirror() as mirror:
             mirror.go_relative(0, 0, dz_nm)
             self._wait_for_mirror(mirror)
-        self._z_nm += dz_nm
+            # Read back the hardware position so the GUI reports what the
+            # mirror actually did, not what we asked for.
+            z_abs_nm = float(mirror.absolute_position[2])
+        self._z_nm = z_abs_nm - self._z0_nm
 
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
         self._require_connected()
-        x_bit = ctypes.c_long()
-        y_bit = ctypes.c_long()
-        self._gb511_wrap.ctr_get_current_xy_pos(x_bit, y_bit)
-        x_nm = self._galvo.Bit2Pos(x_bit.value) - self._galvo.X0
-        y_nm = self._galvo.Bit2Pos(y_bit.value) - self._galvo.Y0
+        xb, yb = self._read_gb511_bits()
+        x_nm = self._galvo.Bit2Pos(xb) - self._galvo.X0
+        y_nm = self._galvo.Bit2Pos(yb) - self._galvo.Y0
         return (float(x_nm), float(y_nm))
 
     def read_z_nm(self) -> float:
@@ -170,7 +174,7 @@ class GalvoNeaBackend(GalvoBackend):
 
     def available_z_steps_nm(self) -> tuple[float, ...]:
         self._require_connected()
-        return STANDARD_STEP_OPTIONS_NM
+        return Z_STEP_OPTIONS_NM
 
     # ------------------------------------------------------------------
     # Signal readout
@@ -262,6 +266,54 @@ class GalvoNeaBackend(GalvoBackend):
         if not self._connected:
             raise GalvoError("GalvoNeaBackend is not connected.")
 
+    # ------------------------------------------------------------------
+    # GB511 access
+    # ------------------------------------------------------------------
+
+    def _read_gb511_bits(self) -> Tuple[int, int]:
+        """Read current galvo position in bits, with output params passed correctly.
+
+        ``ctypes`` passes a bare ``c_long`` **by value**: a raw DLL handle
+        would receive the integer 0 instead of a pointer and could never
+        write the position back, so every read would report 0 bits forever
+        (which is exactly what breaks relative moves).  Raw DLL handles get
+        ``byref``; wrapper objects keep receiving the ``c_long`` instances.
+        """
+        x_bit = ctypes.c_long()
+        y_bit = ctypes.c_long()
+        if _is_raw_dll(self._gb511_wrap):
+            args: Tuple[Any, ...] = (ctypes.byref(x_bit), ctypes.byref(y_bit))
+        else:
+            args = (x_bit, y_bit)
+        self._call_gb511("ctr_get_current_xy_pos", *args)
+        return (int(x_bit.value), int(y_bit.value))
+
+    def _goto_gb511_bits(self, x_bits: int, y_bits: int) -> None:
+        self._call_gb511("ctr_goto_xy", int(x_bits), int(y_bits))
+
+    def _call_gb511(self, name: str, *args: Any) -> Any:
+        """Call a GB511 function, translating failures into GalvoError.
+
+        The board signals refusal through nonzero return codes; ignoring
+        them (as earlier revisions did) turns a dead board into a silent
+        no-op.  ctypes-level faults (e.g. access violations) are wrapped so
+        the GUI can report them instead of killing the pythonw process.
+        """
+        if self._gb511_wrap is None:
+            raise GalvoError(f"GB511 board is not open for {name}.")
+        func = getattr(self._gb511_wrap, name, None)
+        if func is None:
+            raise GalvoError(f"GB511 wrapper has no function {name}.")
+        try:
+            result = func(*args)
+        except GalvoError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise GalvoError(f"{name} failed: {exc}") from exc
+        if isinstance(result, int) and result != 0:
+            raise GalvoError(f"{name} failed with code {result}.")
+        return result
+
     def _read_absolute_mirror_z_nm(self) -> float:
         with self._open_mirror() as mirror:
             return float(mirror.absolute_position[2])
@@ -278,6 +330,11 @@ class GalvoNeaBackend(GalvoBackend):
         waiter = getattr(mirror, "await_async", None)
         if waiter is not None:
             self._loop.run_until_complete(waiter())
+
+
+def _is_raw_dll(obj: Any) -> bool:
+    """True when *obj* is a bare ctypes library handle (needs byref for out-params)."""
+    return isinstance(obj, ctypes.CDLL)
 
 
 def _resolve_repo_path(path_str: str) -> Path:

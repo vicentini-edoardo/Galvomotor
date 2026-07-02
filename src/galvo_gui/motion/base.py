@@ -10,6 +10,10 @@ import numpy as np
 
 _N_HARMONICS = 6
 STANDARD_STEP_OPTIONS_NM = (0.1, 1.0, 10.0, 100.0)
+# The parabolic-mirror Z axis needs far coarser jogs than the galvo: the lab
+# notebooks step it in ~1000 nm increments, and sub-100 nm requests are within
+# the positioner's deadband.
+Z_STEP_OPTIONS_NM = (10.0, 100.0, 1000.0, 10000.0)
 
 
 class GalvoError(RuntimeError):
