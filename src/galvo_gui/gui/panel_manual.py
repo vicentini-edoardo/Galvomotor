@@ -32,12 +32,21 @@ from galvo_gui.motion.base import (
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 
 
+def _stop_thread(thread: QThread) -> None:
+    if thread.isRunning():
+        thread.quit()
+        thread.wait(5000)
+
+
 class _BackendOpRunner(QObject):
     """Execute blocking backend lifecycle operations on one dedicated thread.
 
-    The neaSNOM SDK is sensitive to thread-affinity during connect/disconnect.
-    Reusing a single thread for the whole backend session avoids reconnect
-    hangs caused by tearing down the session from a different QThread.
+    The neaSNOM SDK is sensitive to thread-affinity: the CLR/DLL state it
+    loads on the first connect stays pinned to that OS thread for the rest
+    of the process. The runner's thread is therefore created once and kept
+    for the whole lifetime of the panel — every connect and disconnect,
+    including reconnects after a disconnect, must run on that same thread
+    or the next ``nea_tools.connect`` hangs until the app is restarted.
     """
 
     succeeded = pyqtSignal()
@@ -244,7 +253,7 @@ class ConnectionPanel(QWidget):
                        self._on_connect_failed)
 
     def _on_connect_succeeded(self) -> None:
-        self._finish_op(keep_thread=True)
+        self._finish_op()
         self._backend = self._pending_backend
         self._pending_backend = None
         self._set_button_state("Disconnect", accent=False, enabled=True)
@@ -306,20 +315,26 @@ class ConnectionPanel(QWidget):
             Qt.ConnectionType.QueuedConnection,
         )
 
-    def _finish_op(self, *, keep_thread: bool = False) -> None:
+    def _finish_op(self) -> None:
+        # The op thread is deliberately NOT torn down here: the SDK pins its
+        # state to the thread of the first connect, so a reconnect scheduled
+        # on a fresh thread hangs. The thread lives until closeEvent.
         self._op_busy = False
-        if not keep_thread:
-            self._teardown_op_thread()
 
     def _ensure_op_thread(self) -> None:
         if self._op_thread is not None and self._op_runner is not None:
             return
-        thread = QThread(self)
+        # Unparented on purpose: a QThread owned by the panel is destroyed
+        # while still running if the panel is garbage-collected without
+        # closeEvent, which aborts the process. The destroyed hook below
+        # stops the thread first; the closure keeps the wrapper alive.
+        thread = QThread()
         runner = _BackendOpRunner()
         runner.moveToThread(thread)
         runner.succeeded.connect(self._handle_op_succeeded)
         runner.failed.connect(self._handle_op_failed)
         thread.finished.connect(runner.deleteLater)
+        self.destroyed.connect(lambda: _stop_thread(thread))
         thread.start()
         self._op_thread = thread
         self._op_runner = runner
@@ -330,9 +345,8 @@ class ConnectionPanel(QWidget):
         self._op_runner = None
         if thread is None:
             return
-        thread.quit()
         with contextlib.suppress(RuntimeError):
-            thread.wait(5000)
+            _stop_thread(thread)
 
     @pyqtSlot()
     def _handle_op_succeeded(self) -> None:
@@ -395,17 +409,29 @@ class ConnectionPanel(QWidget):
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
-        # Finish any in-flight connect/disconnect, then tear down synchronously:
-        # at shutdown there is no event loop left to run a worker's callbacks.
-        with contextlib.suppress(RuntimeError):
-            if self._op_busy and self._op_thread is not None:
-                self._op_thread.wait(5000)
-        if self._backend is not None and self._backend.is_connected():
-            backend = self._backend
-            self._backend = None
-            with contextlib.suppress(Exception):
-                backend.disconnect()
+        backend = self._backend
+        self._backend = None
+        if backend is not None and backend.is_connected():
+            # A connected backend implies no op is in flight, so the runner is
+            # idle. Tear the session down ON the op thread (the SDK must be
+            # closed by the thread that opened it); the blocking invoke
+            # returns once disconnect has run, and any error goes to the
+            # failed signal, which has no callbacks armed at shutdown.
+            runner = self._op_runner
+            thread = self._op_thread
+            if runner is not None and thread is not None and thread.isRunning():
+                runner.set_op(backend.disconnect)
+                QMetaObject.invokeMethod(
+                    runner,
+                    "run_current_op",
+                    Qt.ConnectionType.BlockingQueuedConnection,
+                )
+            else:
+                with contextlib.suppress(Exception):
+                    backend.disconnect()
             self.backend_disconnected.emit()
+        # quit() is honoured only after any in-flight op returns, so this also
+        # waits out a connect/disconnect that is still running.
         self._teardown_op_thread()
         super().closeEvent(event)  # type: ignore[misc]
 
