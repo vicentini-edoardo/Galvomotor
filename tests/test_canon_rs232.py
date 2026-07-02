@@ -35,8 +35,18 @@ def test_servo_on_writes_expected_ascii_frame() -> None:
     assert fake.writes == [b"A1C004/1\n"]
 
 
+def test_status_read_without_argument_still_sends_required_delimiter() -> None:
+    fake = FakeSerial([b"A1C014/3\n"])
+    rs = CanonRS232(serial_factory=lambda **_: fake, port_selector=lambda: "COM7")
+    rs.connect()
+
+    rs.read_status(1)
+
+    assert fake.writes == [b"A1C014/\n"]
+
+
 def test_read_status_decodes_named_bits() -> None:
-    fake = FakeSerial([b"A2C014/19\n"])
+    fake = FakeSerial([b"A2C014/5495\n"])
     rs = CanonRS232(serial_factory=lambda **_: fake, port_selector=lambda: "COM9")
     rs.connect()
 
@@ -46,10 +56,17 @@ def test_read_status_decodes_named_bits() -> None:
     assert status.servo_on is True
     assert status.sync is True
     assert status.origining is True
+    assert status.program_coordinates is True
+    assert status.z_phase_warning is True
+    assert status.moving is True
+    assert status.encoder_warning is True
+    assert status.target_relative is True
+    assert status.target_position_set is False
+    assert status.linearity_calibrating is False
 
 
 def test_read_errors_decodes_named_bits() -> None:
-    fake = FakeSerial([b"A1C015/72\n"])
+    fake = FakeSerial([b"A1C015/21752\n"])
     rs = CanonRS232(serial_factory=lambda **_: fake, port_selector=lambda: "COM5")
     rs.connect()
 
@@ -57,7 +74,17 @@ def test_read_errors_decodes_named_bits() -> None:
 
     assert isinstance(errors, CanonErrors)
     assert errors.clock_lack is True
+    assert errors.driver_overheat is True
+    assert errors.motor_overheat is True
     assert errors.format_error is True
+    assert errors.command_data_error is True
+    assert errors.parameter_error is False
+    assert errors.status_error is False
+    assert errors.communication_error is True
+    assert errors.origin_detection_error is False
+    assert errors.encoder_signal_error is True
+    assert errors.servo_off_by_hardware is True
+    assert errors.current_saturation is False
 
 
 def test_reply_axis_mismatch_raises() -> None:
@@ -81,3 +108,15 @@ def test_connect_uses_manual_port_before_auto_detect() -> None:
 
     assert captured["port"] == "COM3"
     assert captured["baudrate"] == 38400
+
+
+def test_read_temperature_divides_only_degree_c_sources() -> None:
+    fake = FakeSerial([b"A1C011/12345\n", b"A1C011/2345\n"])
+    rs = CanonRS232(serial_factory=lambda **_: fake, port_selector=lambda: "COM3")
+    rs.connect()
+
+    adc_value = rs.read_temperature(1, 0)
+    temp_c = rs.read_temperature(1, 10)
+
+    assert adc_value == 12345.0
+    assert temp_c == 23.45

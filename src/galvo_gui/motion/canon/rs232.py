@@ -30,7 +30,13 @@ class CanonStatus:
     in_position: bool
     alarm: bool
     origining: bool
+    program_coordinates: bool
+    z_phase_warning: bool
     moving: bool
+    encoder_warning: bool
+    target_relative: bool
+    target_position_set: bool
+    linearity_calibrating: bool
 
 
 @dataclass(frozen=True)
@@ -39,7 +45,17 @@ class CanonErrors:
     stroke_over: bool
     counter_over: bool
     clock_lack: bool
+    driver_overheat: bool
+    motor_overheat: bool
     format_error: bool
+    command_data_error: bool
+    parameter_error: bool
+    status_error: bool
+    communication_error: bool
+    origin_detection_error: bool
+    encoder_signal_error: bool
+    servo_off_by_hardware: bool
+    current_saturation: bool
 
 
 class CanonRS232:
@@ -100,7 +116,13 @@ class CanonRS232:
             in_position=bool(raw & 0x0004),
             alarm=bool(raw & 0x0008),
             origining=bool(raw & 0x0010),
+            program_coordinates=bool(raw & 0x0020),
+            z_phase_warning=bool(raw & 0x0040),
             moving=bool(raw & 0x0100),
+            encoder_warning=bool(raw & 0x0400),
+            target_relative=bool(raw & 0x1000),
+            target_position_set=bool(raw & 0x4000),
+            linearity_calibrating=bool(raw & 0x8000),
         )
 
     def read_errors(self, axis: int) -> CanonErrors:
@@ -110,14 +132,27 @@ class CanonRS232:
             stroke_over=bool(raw & 0x0001),
             counter_over=bool(raw & 0x0002),
             clock_lack=bool(raw & 0x0008),
+            driver_overheat=bool(raw & 0x0010),
+            motor_overheat=bool(raw & 0x0020),
             format_error=bool(raw & 0x0040),
+            command_data_error=bool(raw & 0x0080),
+            parameter_error=bool(raw & 0x0100),
+            status_error=bool(raw & 0x0200),
+            communication_error=bool(raw & 0x0400),
+            origin_detection_error=bool(raw & 0x0800),
+            encoder_signal_error=bool(raw & 0x1000),
+            servo_off_by_hardware=bool(raw & 0x4000),
+            current_saturation=bool(raw & 0x8000),
         )
 
     def read_position(self, axis: int, target_mode: int = 0) -> int:
         return self._send_command(axis, 12, target_mode)
 
     def read_temperature(self, axis: int, source: int) -> float:
-        return self._send_command(axis, 11, source) / 100.0
+        raw = self._send_command(axis, 11, source)
+        if source in (10, 11):
+            return raw / 100.0
+        return float(raw)
 
     def read_version(self, axis: int, source: int) -> int:
         return self._send_command(axis, 13, source)
@@ -143,16 +178,16 @@ class CanonRS232:
             raise GalvoError(f"Canon command {command_id} failed on axis {axis}.")
 
     def _send_command(self, axis: int, command_id: int, data: int | None) -> int:
-        payload = f"A{axis}C{command_id:03d}"
+        payload = f"A{axis}C{command_id:03d}/"
         if data is not None:
-            payload += f"/{data}"
+            payload += f"{data}"
         frame = (payload + "\n").encode("ascii")
         return self._exchange(frame, axis, "C", command_id)
 
     def _send_parameter(self, axis: int, parameter_id: int, data: int | None) -> int:
-        payload = f"A{axis}P{parameter_id:03d}"
+        payload = f"A{axis}P{parameter_id:03d}/"
         if data is not None:
-            payload += f"/{data}"
+            payload += f"{data}"
         frame = (payload + "\n").encode("ascii")
         return self._exchange(frame, axis, "P", parameter_id)
 
