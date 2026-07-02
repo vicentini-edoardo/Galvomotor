@@ -7,8 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import QSettings, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtCore import QMetaObject, QObject, pyqtSlot
+from PyQt6.QtCore import QMetaObject, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,

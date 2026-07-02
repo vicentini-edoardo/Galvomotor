@@ -54,6 +54,24 @@ _MOVE_SETTLE_S = 0.05
 _GOTO_PER_READ_X = 0.11080
 _GOTO_PER_READ_Y = 0.11080
 
+# -2**19: value the GB511 reports on both axes when the position read-back is
+# not live (board not selected, held by another client, or the GC-211/212
+# drivers are not following the high-speed link) — see galvo_debug.py.
+_READBACK_SENTINEL = -(2**19)
+
+# Process-wide SDK state shared by every backend instance.  Both halves of
+# the stack pin themselves to the process on first use, so reconnects must
+# reuse them instead of recreating them:
+#   - The GB511 board is single-client and galvo_functions has no close API;
+#     re-running open_galvo() on the live board (reloading the DSP program
+#     and re-selecting the board) kills the read-back — both axes then report
+#     _READBACK_SENTINEL and every move is silently ignored.
+#   - neaspec/nea_tools capture the asyncio loop that is current when they
+#     are first imported; a reconnect that presents a fresh loop leaves
+#     mirror waits pending on the dead one, hanging the first Z move.
+_GB511_SHARED: dict[str, Any] = {"wrap": None, "kwargs": None}
+_BACKEND_LOOP: Any = None
+
 
 class GalvoNeaBackend(GalvoBackend):
     """Real backend: galvo_functions Galvo + neaSNOM optical signal readout.
@@ -135,13 +153,16 @@ class GalvoNeaBackend(GalvoBackend):
             callback(f"{backend_label}: {message}")
 
     def _connect_nea_session(self, host: str) -> None:
-        # Always create a fresh event loop for each nea_tools session.
-        # Reusing or leaking the previous loop leaves the SDK half-open and
-        # the next connect can hang on the microscope handshake.
-        self._close_backend_loop()
-        self._loop = asyncio.new_event_loop()
+        global _BACKEND_LOOP  # noqa: PLW0603 — process-wide SDK state, see top of module
+        # One event loop for the whole process: the SDK modules imported
+        # below capture the loop that is current on first import, so every
+        # later session (reconnects) must present that same loop again.
+        # Closing it per session left mirror waits hanging on the dead loop.
+        if _BACKEND_LOOP is None or _BACKEND_LOOP.is_closed():
+            _BACKEND_LOOP = asyncio.new_event_loop()
+            nest_asyncio.apply(_BACKEND_LOOP)
+        self._loop = _BACKEND_LOOP
         asyncio.set_event_loop(self._loop)
-        nest_asyncio.apply(self._loop)
         self._loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
         )
@@ -181,15 +202,34 @@ class GalvoNeaBackend(GalvoBackend):
                     "Custom GB511 program file requested, but this galvo_functions.open_galvo "
                     "implementation does not support overriding it."
                 )
-        with _working_directory(_CONFIG_DIR):
-            self._gb511_wrap, _status = _open_galvo(**open_kwargs)
+        if _GB511_SHARED["wrap"] is not None and _GB511_SHARED["kwargs"] == open_kwargs:
+            # Board already open in this process: reuse the handle instead of
+            # re-running open_galvo(), which would reload the DSP program into
+            # the live board and leave the read-back dead (sentinel on both
+            # axes). This mirrors the notebooks, which open the board once
+            # and never close it.
+            self._gb511_wrap = _GB511_SHARED["wrap"]
+            self._report_status("Reusing galvo board opened earlier in this session.")
+        else:
+            with _working_directory(_CONFIG_DIR):
+                self._gb511_wrap, _status = _open_galvo(**open_kwargs)
+            _GB511_SHARED["wrap"] = self._gb511_wrap
+            _GB511_SHARED["kwargs"] = dict(open_kwargs)
+            self._report_status("Galvo board handle opened.")
         self._galvo = _GalvoHW(self._cal_path)
-        self._report_status("Galvo board handle opened.")
 
     def _complete_connect(self) -> None:
         # Fail loudly now if the board rejects position reads, instead of
         # connecting into a dead board that silently ignores every move.
-        self._read_gb511_bits()
+        x_bits, y_bits = self._read_gb511_bits()
+        if x_bits == _READBACK_SENTINEL and y_bits == _READBACK_SENTINEL:
+            raise GalvoError(
+                f"GB511 position read-back is not live: both axes report the "
+                f"{_READBACK_SENTINEL} sentinel. The drivers are not following "
+                "the board (servo off, not in high-speed mode, axes not homed, "
+                "or the board is held by another client such as the Canon "
+                "control software). Fix the driver state and reconnect."
+            )
         self._report_status("GB511 position read-back OK.")
         self._z0_nm = self._read_absolute_mirror_z_nm()
         self._z_nm = 0.0
@@ -198,6 +238,7 @@ class GalvoNeaBackend(GalvoBackend):
 
     def _disconnect_nea_session(self) -> None:
         loop = self._loop
+        self._loop = None
         self._report_status("Closing neaSNOM session...")
         try:
             if loop is not None and not loop.is_closed():
@@ -209,23 +250,16 @@ class GalvoNeaBackend(GalvoBackend):
                     if loop is not None and not loop.is_closed():
                         loop.run_until_complete(disconnect_result)
                     else:
-                        asyncio.run(disconnect_result)
-        finally:
-            self._close_backend_loop()
-            self._report_status("neaSNOM session closed.")
 
-    def _close_backend_loop(self) -> None:
-        loop = self._loop
-        self._loop = None
-        if loop is None:
-            return
-        with contextlib.suppress(Exception):
-            current_loop = asyncio.get_event_loop()
-            if current_loop is loop:
-                asyncio.set_event_loop(None)
-        with contextlib.suppress(Exception):
-            if not loop.is_closed():
-                loop.close()
+                        async def _await_disconnect(awaitable: Any) -> None:
+                            await awaitable
+
+                        asyncio.run(_await_disconnect(disconnect_result))
+        finally:
+            # The loop itself deliberately stays open for the process — the
+            # SDK modules captured it at first import and the next session
+            # must reuse it (see _connect_nea_session).
+            self._report_status("neaSNOM session closed.")
 
     # ------------------------------------------------------------------
     # Motion
@@ -284,7 +318,7 @@ class GalvoNeaBackend(GalvoBackend):
         self._require_connected()
         if (x_nm is None) != (y_nm is None):
             raise ValueError("x_nm and y_nm must be provided together.")
-        if x_nm is None:
+        if x_nm is None or y_nm is None:
             self._home_x_nm, self._home_y_nm = self._read_xy_nm_relative_to_startup_home()
         else:
             self._home_x_nm = float(x_nm)

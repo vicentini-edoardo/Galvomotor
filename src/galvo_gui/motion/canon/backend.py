@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import time
 
+from galvo_gui.motion.base import GalvoError
 from galvo_gui.motion.canon.rs232 import CanonRS232
-from galvo_gui.motion.galvo_nea import GalvoNeaBackend, _DEFAULT_CAL_FILES_PATH
+from galvo_gui.motion.galvo_nea import _DEFAULT_CAL_FILES_PATH, GalvoNeaBackend
 
 _AXES = (1, 2)
+_HOMING_TIMEOUT_S = 30.0
+_HOMING_POLL_S = 0.2
 
 
 class CanonGalvoBackend(GalvoNeaBackend):
@@ -81,9 +85,27 @@ class CanonGalvoBackend(GalvoNeaBackend):
             if not self._rs232.read_status(axis).sync:
                 self._report_status(f"Axis {axis} not synced; starting homing.")
                 self._rs232.home(axis)
+                self._wait_axis_synced(axis)
         self._report_status("Switching Canon axes to high-speed mode...")
         for axis in _AXES:
             self._rs232.switch_high_speed(axis)
+
+    def _wait_axis_synced(self, axis: int) -> None:
+        # home() only starts origin detection. Switching the driver to
+        # high-speed mode while it is still origining leaves it not following
+        # the GB511, with the position read-back dead (sentinel on both axes).
+        deadline = time.monotonic() + _HOMING_TIMEOUT_S
+        while True:
+            status = self._rs232.read_status(axis)
+            if status.sync and not getattr(status, "origining", False):
+                self._report_status(f"Axis {axis} homing complete.")
+                return
+            if time.monotonic() >= deadline:
+                raise GalvoError(
+                    f"Axis {axis} did not report sync within "
+                    f"{_HOMING_TIMEOUT_S:.0f} s after homing was started."
+                )
+            time.sleep(_HOMING_POLL_S)
 
     def _restore_rs232_mode(self) -> None:
         if not self._rs232_connected:

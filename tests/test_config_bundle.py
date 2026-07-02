@@ -265,7 +265,10 @@ def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
     assert backend.read_z_nm() == 0.0
 
 
-def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:
+def test_disconnect_awaits_nea_tools_and_leaves_the_loop_open(monkeypatch) -> None:
+    """The loop must survive the disconnect: neaspec/nea_tools capture it at
+    first import, and the next session must present it again or mirror waits
+    (Z moves) hang forever after a reconnect."""
     awaited = {
         "disconnect_called": False,
         "run_until_complete_called": False,
@@ -309,7 +312,7 @@ def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:
 
     assert awaited["run_until_complete_called"] is True
     assert awaited["disconnect_called"] is True
-    assert awaited["loop_closed"] is True
+    assert awaited["loop_closed"] is False
     assert backend._connected is False
     assert backend._loop is None
 
@@ -335,3 +338,117 @@ def test_real_connect_reports_stage_progress(monkeypatch) -> None:
         "Real: Validating hardware read-back...",
         "Real: Connection complete.",
     ]
+
+
+def test_open_galvo_hardware_reuses_the_board_handle_across_reconnects(monkeypatch) -> None:
+    """Regression: the GB511 board is single-client and galvo_functions has no
+    close API, so re-running open_galvo() on a reconnect reprogrammed the live
+    board and killed the read-back (both axes stuck at the -2**19 sentinel).
+    The handle from the first open must be reused for the rest of the process."""
+
+    open_calls: list[dict] = []
+    board = object()
+
+    def fake_open_galvo(CalFn="", idx_board=1, program_file=None):
+        open_calls.append({"CalFn": CalFn, "idx_board": idx_board})
+        return board, 0
+
+    monkeypatch.setattr(galvo_nea, "_open_galvo", fake_open_galvo, raising=False)
+    monkeypatch.setattr(galvo_nea, "_GalvoHW", lambda cal: SimpleNamespace(), raising=False)
+    monkeypatch.setattr(galvo_nea, "_GB511_SHARED", {"wrap": None, "kwargs": None})
+
+    first = object.__new__(galvo_nea.GalvoNeaBackend)
+    first._cal_path = "cal"
+    first._status_callback = None
+    first._open_galvo_hardware()
+
+    second = object.__new__(galvo_nea.GalvoNeaBackend)  # reconnect
+    second._cal_path = "cal"
+    second._status_callback = None
+    second._open_galvo_hardware()
+
+    assert len(open_calls) == 1
+    assert first._gb511_wrap is board
+    assert second._gb511_wrap is board
+
+    # Different board settings are not served from the cache.
+    third = object.__new__(galvo_nea.GalvoNeaBackend)
+    third._cal_path = "cal"
+    third._status_callback = None
+    third._board_index = 5
+    third._open_galvo_hardware()
+    assert len(open_calls) == 2
+
+
+def test_reconnect_reuses_the_process_event_loop(monkeypatch) -> None:
+    """Regression: each session used to build (and close) its own asyncio
+    loop. neaspec/nea_tools capture the loop current at their first import,
+    so the second session's mirror waits hung on the first session's dead
+    loop and the first Z jog froze the app. One loop per process."""
+
+    import sys
+
+    async def fake_connect(host, fingerprint=None, path_to_dll=""):
+        return None
+
+    async def fake_disconnect():
+        return None
+
+    applied: list[object] = []
+    monkeypatch.setattr(
+        galvo_nea,
+        "nea_tools",
+        SimpleNamespace(connect=fake_connect, disconnect=fake_disconnect),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        galvo_nea, "nest_asyncio", SimpleNamespace(apply=applied.append), raising=False
+    )
+    monkeypatch.setattr(galvo_nea, "_BACKEND_LOOP", None)
+
+    microscope = SimpleNamespace(
+        stream=SimpleNamespace(), motors=SimpleNamespace(Mirror=object)
+    )
+    monkeypatch.setitem(sys.modules, "neaspec", SimpleNamespace(context=object()))
+    monkeypatch.setitem(sys.modules, "nea_tools", SimpleNamespace(microscope=microscope))
+    monkeypatch.setitem(sys.modules, "nea_tools.microscope", microscope)
+    monkeypatch.setitem(sys.modules, "nea_tools.microscope.stream", microscope.stream)
+    monkeypatch.setitem(sys.modules, "nea_tools.microscope.motors", microscope.motors)
+
+    first = object.__new__(galvo_nea.GalvoNeaBackend)
+    first._status_callback = None
+    first._connect_nea_session("nea-host")
+    loop = first._loop
+    assert loop is not None and not loop.is_closed()
+
+    first._disconnect_nea_session()
+    assert not loop.is_closed()  # survives the disconnect
+
+    second = object.__new__(galvo_nea.GalvoNeaBackend)  # reconnect
+    second._status_callback = None
+    second._connect_nea_session("nea-host")
+
+    assert second._loop is loop
+    assert applied == [loop]  # nest_asyncio applied exactly once
+
+    loop.close()  # test hygiene only; the app keeps it open
+
+
+def test_complete_connect_rejects_a_dead_position_readback() -> None:
+    """A reconnect into a board whose read-back reports the -2**19 sentinel on
+    both axes must fail loudly instead of connecting into hardware that
+    silently ignores every move."""
+
+    class SentinelWrapper:
+        def ctr_get_current_xy_pos(self, x, y) -> None:
+            x.value = -(2**19)
+            y.value = -(2**19)
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._gb511_wrap = SentinelWrapper()
+    backend._status_callback = None
+
+    with pytest.raises(GalvoError, match="not live"):
+        backend._complete_connect()
+
+    assert not getattr(backend, "_connected", False)
