@@ -120,7 +120,7 @@ def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
     assert backend.read_xy_nm() == (0.0, 0.0)
 
 
-def test_connection_panel_shows_canon_fields_only_for_canon_backend(qapp: object) -> None:
+def test_connection_panel_shows_real_and_canon_fields_for_canon_backend(qapp: object) -> None:
     from galvo_gui.gui.panel_manual import ConnectionPanel
 
     panel = ConnectionPanel()
@@ -130,8 +130,8 @@ def test_connection_panel_shows_canon_fields_only_for_canon_backend(qapp: object
     assert panel._serial_port_edit.isVisible()
     assert panel._board_index_edit.isVisible()
     assert panel._program_file_edit.isVisible()
-    assert not panel._host_edit.isVisible()
-    assert not panel._cal_edit.isVisible()
+    assert panel._host_edit.isVisible()
+    assert panel._cal_edit.isVisible()
 
 
 def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
@@ -226,3 +226,55 @@ def test_connection_panel_persists_canon_settings(qapp: object) -> None:
     assert restored._serial_port_edit.text() == "COM8"
     assert restored._board_index_edit.text() == "3"
     assert restored._program_file_edit.text() == r"C:\Canon\gb511_core0.hex"
+
+
+def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(qapp, monkeypatch) -> None:
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+    import galvo_gui.motion.canon.backend as canon_backend_module
+
+    captured = {}
+
+    class FakeCanonBackend:
+        def __init__(
+            self,
+            cal_files_path="",
+            *,
+            board_index=0,
+            program_file=None,
+            serial_port=None,
+        ) -> None:
+            captured["init"] = {
+                "cal_files_path": cal_files_path,
+                "board_index": board_index,
+                "program_file": program_file,
+                "serial_port": serial_port,
+            }
+
+        def connect(self, host="") -> None:
+            captured["connect_host"] = host
+
+        def disconnect(self) -> None:
+            return None
+
+        def is_connected(self) -> bool:
+            return True
+
+    monkeypatch.setattr(canon_backend_module, "CanonGalvoBackend", FakeCanonBackend)
+
+    panel = ConnectionPanel()
+    panel._backend_combo.setCurrentIndex(2)
+    panel._host_edit.setText("nea-server")
+    panel._cal_edit.setText("/tmp/cal_files")
+    panel._serial_port_edit.setText("COM8")
+    panel._board_index_edit.setText("3")
+    panel._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
+    panel._connect()
+    _process_until(qapp, lambda: panel._backend is not None)
+
+    assert captured["init"] == {
+        "cal_files_path": "/tmp/cal_files",
+        "board_index": 3,
+        "program_file": r"C:\Canon\gb511_core0.hex",
+        "serial_port": "COM8",
+    }
+    assert captured["connect_host"] == "nea-server"

@@ -140,7 +140,7 @@ class ConnectionPanel(QWidget):
         return grp
 
     def _on_backend_changed(self, index: int) -> None:
-        is_real = index == 1
+        is_real = index in (1, 2)
         is_canon = index == 2
         self._host_edit.setVisible(is_real)
         for widget in self._cal_row_widgets:
@@ -196,11 +196,16 @@ class ConnectionPanel(QWidget):
             board_index = int(self._board_index_edit.text() or "0")
             program_file = self._program_file_edit.text().strip() or None
             serial_port = self._serial_port_edit.text().strip() or None
-            backend = CanonGalvoBackend(
-                board_index=board_index,
-                program_file=program_file,
-                serial_port=serial_port,
-            )
+            try:
+                backend = CanonGalvoBackend(
+                    self._cal_edit.text(),
+                    board_index=board_index,
+                    program_file=program_file,
+                    serial_port=serial_port,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._log.append_line(f"Connection failed: {exc}")
+                return
 
         if index == 0:
             self._pending_name = "Mock"
@@ -209,11 +214,11 @@ class ConnectionPanel(QWidget):
         else:
             self._pending_name = "Real" if index == 1 else "Canon"
 
-        host = self._host_edit.text().strip() or "nea-server"
+        connect_target = self._host_edit.text().strip() or "nea-server"
         self._pending_backend = backend
         self._set_button_state("Connecting…", accent=True, enabled=False)
         self._backend_combo.setEnabled(False)
-        self._start_op(lambda: backend.connect(host), self._on_connect_succeeded,
+        self._start_op(lambda: backend.connect(connect_target), self._on_connect_succeeded,
                        self._on_connect_failed)
 
     def _on_connect_succeeded(self) -> None:

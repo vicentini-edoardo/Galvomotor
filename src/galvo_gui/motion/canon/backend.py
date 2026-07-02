@@ -1,150 +1,97 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Callable
 
-from galvo_gui.motion.base import STANDARD_STEP_OPTIONS_NM, GalvoBackend, GalvoError, SnomSample
-from galvo_gui.motion.canon.gb511 import GB511MotionController
 from galvo_gui.motion.canon.rs232 import CanonRS232
+from galvo_gui.motion.galvo_nea import GalvoNeaBackend, _DEFAULT_CAL_FILES_PATH
+
+_AXES = (1, 2)
 
 
-class CanonGalvoBackend(GalvoBackend):
+class CanonGalvoBackend(GalvoNeaBackend):
+    """Full real backend plus Canon RS-232 mode management.
+
+    This backend keeps the same functionality as ``GalvoNeaBackend`` for
+    XY motion, Z motion, signal readout, and scans. Its extra job is to
+    bring the Canon controller into high-speed mode over RS-232 so the
+    existing ``galvo_functions`` / GB511 path can drive the galvomotor.
+    """
+
     def __init__(
         self,
+        cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH),
         rs232: CanonRS232 | None = None,
-        motion: GB511MotionController | None = None,
-        bit_scale_nm: float = 1.0,
         board_index: int = 0,
         program_file: str | None = None,
         serial_port: str | None = None,
     ) -> None:
+        super().__init__(cal_files_path)
         self._rs232 = rs232 or CanonRS232()
-        self._motion = motion or GB511MotionController()
-        self._bit_scale_nm = bit_scale_nm
         self._board_index = board_index
         self._program_file = program_file
         self._serial_port = serial_port
-        self._connected = False
-        self._home_x_nm = 0.0
-        self._home_y_nm = 0.0
+        self._rs232_connected = False
 
-    def connect(self, host: str = "") -> None:
-        opened_motion = False
-        opened_serial = False
+    def connect(self, host: str = "nea-server") -> None:
+        galvo_open = False
         try:
-            self._motion.initialize(board_index=self._board_index, program_file=self._program_file)
-            opened_motion = True
-            port = host or self._serial_port
-            self._rs232.connect(port=port)
-            opened_serial = True
-            for axis in (1, 2):
-                self._rs232.clear_error(axis)
-            for axis in (1, 2):
-                self._rs232.servo_on(axis)
-            for axis in (1, 2):
-                if not self._rs232.read_status(axis).sync:
-                    self._rs232.home(axis)
-            self._motion.start()
-            for axis in (1, 2):
-                self._rs232.switch_high_speed(axis)
+            self._connect_nea_session(host)
+            self._open_galvo_hardware()
+            galvo_open = True
+            self._open_rs232()
+            self._prepare_axes_for_high_speed()
+            self._complete_connect()
         except Exception:
-            if opened_serial:
-                self._safe_disconnect_serial()
-            if opened_motion:
-                self._safe_shutdown_motion()
+            self._unwind_failed_connect(galvo_open=galvo_open)
             raise
-        self._connected = True
 
     def disconnect(self) -> None:
-        if not self._connected:
+        try:
+            self._restore_rs232_mode()
+        finally:
+            super().disconnect()
+
+    def _open_rs232(self) -> None:
+        self._rs232.connect(port=self._serial_port)
+        self._rs232_connected = True
+
+    def _prepare_axes_for_high_speed(self) -> None:
+        for axis in _AXES:
+            self._rs232.clear_error(axis)
+        for axis in _AXES:
+            self._rs232.servo_on(axis)
+        for axis in _AXES:
+            if not self._rs232.read_status(axis).sync:
+                self._rs232.home(axis)
+        for axis in _AXES:
+            self._rs232.switch_high_speed(axis)
+
+    def _restore_rs232_mode(self) -> None:
+        if not self._rs232_connected:
             return
-        self._motion.stop()
-        for axis in (1, 2):
-            self._rs232.switch_rs232(axis)
-        for axis in (1, 2):
-            self._rs232.servo_off(axis)
-        self._rs232.disconnect()
-        self._motion.shutdown()
-        self._connected = False
-
-    def is_connected(self) -> bool:
-        return self._connected
-
-    def move_relative(self, dx_nm: float, dy_nm: float) -> None:
-        self._require_connected()
-        x_bits, y_bits = self._motion.read_target_xy_bits()
-        self._motion.update_positions(
-            int(x_bits + (dx_nm / self._bit_scale_nm)),
-            int(y_bits + (dy_nm / self._bit_scale_nm)),
-        )
-
-    def move_z_relative(self, dz_nm: float) -> None:
-        raise GalvoError("Canon backend does not support Z motion.")
-
-    def read_xy_nm(self) -> tuple[float, float]:
-        self._require_connected()
-        x_bits, y_bits = self._motion.read_current_xy_bits()
-        return (
-            (x_bits * self._bit_scale_nm) - self._home_x_nm,
-            (y_bits * self._bit_scale_nm) - self._home_y_nm,
-        )
-
-    def read_z_nm(self) -> float:
-        return 0.0
-
-    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> tuple[float, float]:
-        self._require_connected()
-        if (x_nm is None) != (y_nm is None):
-            raise ValueError("x_nm and y_nm must be provided together.")
-        if x_nm is None:
-            x_bits, y_bits = self._motion.read_current_xy_bits()
-            self._home_x_nm = x_bits * self._bit_scale_nm
-            self._home_y_nm = y_bits * self._bit_scale_nm
-        else:
-            self._home_x_nm = float(x_nm)
-            self._home_y_nm = float(y_nm)
-        return (self._home_x_nm, self._home_y_nm)
-
-    def goto_center(self) -> None:
-        self._require_connected()
-        self._motion.update_positions(
-            int(round(self._home_x_nm / self._bit_scale_nm)),
-            int(round(self._home_y_nm / self._bit_scale_nm)),
-        )
-
-    def available_xy_steps_nm(self) -> tuple[float, ...]:
-        return STANDARD_STEP_OPTIONS_NM
-
-    def available_z_steps_nm(self) -> tuple[float, ...]:
-        return ()
-
-    def read_sample(self, t_integ_s: float = 0.05) -> SnomSample:
-        raise GalvoError("Canon backend has no signal readout configured.")
-
-    def scan(
-        self,
-        dx_nm: float,
-        dy_nm: float,
-        nb_x: int,
-        nb_y: int,
-        twait: float,
-        t_integ_s: float,
-        on_point: Callable[[int, int, SnomSample], None],
-        stop_check: Callable[[], bool],
-    ) -> None:
-        raise GalvoError(
-            "Canon motion is available, but scan imaging is disabled "
-            "until a signal-readout source is added."
-        )
-
-    def _require_connected(self) -> None:
-        if not self._connected:
-            raise GalvoError("Canon backend is not connected.")
-
-    def _safe_disconnect_serial(self) -> None:
+        for axis in _AXES:
+            with contextlib.suppress(Exception):
+                self._rs232.switch_rs232(axis)
+        for axis in _AXES:
+            with contextlib.suppress(Exception):
+                self._rs232.servo_off(axis)
         with contextlib.suppress(Exception):
             self._rs232.disconnect()
+        self._rs232_connected = False
 
-    def _safe_shutdown_motion(self) -> None:
-        with contextlib.suppress(Exception):
-            self._motion.shutdown()
+    def _unwind_failed_connect(self, *, galvo_open: bool) -> None:
+        self._connected = False
+        self._restore_rs232_mode()
+        self._gb511_wrap = None
+        self._galvo = None
+        self._mirror_cls = None
+        self._stream_module = None
+        self._context = None
+        self._z_nm = 0.0
+        if galvo_open:
+            # No board-close API is available in the legacy galvo_functions
+            # path; drop references and unwind the neaSNOM session instead.
+            self._disconnect_nea_session()
+        else:
+            with contextlib.suppress(Exception):
+                self._disconnect_nea_session()

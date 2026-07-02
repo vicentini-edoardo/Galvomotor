@@ -94,6 +94,25 @@ class GalvoNeaBackend(GalvoBackend):
 
     def connect(self, host: str = "nea-server") -> None:
         """Connect to neaSNOM server and initialise galvo hardware."""
+        self._connect_nea_session(host)
+        self._open_galvo_hardware()
+        self._complete_connect()
+
+    def disconnect(self) -> None:
+        was_connected = self._connected
+        # ponytail: keep galvo_functions open — no close_galvo() in notebooks
+        self._connected = False
+        self._gb511_wrap = None
+        self._mirror_cls = None
+        self._stream_module = None
+        self._context = None
+        if was_connected:
+            self._disconnect_nea_session()
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def _connect_nea_session(self, host: str) -> None:
         # Always create a fresh event loop to avoid reusing a closed loop
         # from a previous session (see Andor nea_snom.py:55-61).
         with contextlib.suppress(Exception):
@@ -114,10 +133,38 @@ class GalvoNeaBackend(GalvoBackend):
         self._stream_module = stream
         self._mirror_cls = Mirror
 
+    def _open_galvo_hardware(self) -> None:
         # Initialise galvo hardware (independent of neaSNOM connection).
+        open_kwargs: dict[str, Any] = {"CalFn": _DEFAULT_CORRECTION_FILE}
+        try:
+            signature = inspect.signature(_open_galvo)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None and "idx_board" in signature.parameters:
+            board_index = getattr(self, "_board_index", None)
+            if board_index is not None:
+                open_kwargs["idx_board"] = int(board_index)
+        program_file = getattr(self, "_program_file", None)
+        if program_file is not None:
+            if signature is None:
+                raise GalvoError(
+                    "Custom GB511 program file requested, but open_galvo does not expose "
+                    "a usable signature for wiring that override."
+                )
+            for parameter_name in ("program_file", "ProgramFn", "dsp_file", "DSPFile"):
+                if parameter_name in signature.parameters:
+                    open_kwargs[parameter_name] = program_file
+                    break
+            else:
+                raise GalvoError(
+                    "Custom GB511 program file requested, but this galvo_functions.open_galvo "
+                    "implementation does not support overriding it."
+                )
         with _working_directory(_CONFIG_DIR):
-            self._gb511_wrap, _status = _open_galvo(CalFn=_DEFAULT_CORRECTION_FILE)
+            self._gb511_wrap, _status = _open_galvo(**open_kwargs)
         self._galvo = _GalvoHW(self._cal_path)
+
+    def _complete_connect(self) -> None:
         # Fail loudly now if the board rejects position reads, instead of
         # connecting into a dead board that silently ignores every move.
         self._read_gb511_bits()
@@ -125,20 +172,11 @@ class GalvoNeaBackend(GalvoBackend):
         self._z_nm = 0.0
         self._connected = True
 
-    def disconnect(self) -> None:
-        was_connected = self._connected
-        # ponytail: keep galvo_functions open — no close_galvo() in notebooks
-        self._connected = False
-        self._gb511_wrap = None
-        self._mirror_cls = None
-        if was_connected:
-            with contextlib.suppress(Exception):
-                disconnect_result = nea_tools.disconnect()
-                if inspect.isawaitable(disconnect_result) and self._loop is not None:
-                    self._loop.run_until_complete(disconnect_result)
-
-    def is_connected(self) -> bool:
-        return self._connected
+    def _disconnect_nea_session(self) -> None:
+        with contextlib.suppress(Exception):
+            disconnect_result = nea_tools.disconnect()
+            if inspect.isawaitable(disconnect_result) and self._loop is not None:
+                self._loop.run_until_complete(disconnect_result)
 
     # ------------------------------------------------------------------
     # Motion

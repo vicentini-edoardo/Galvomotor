@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from types import MethodType
+
 import pytest
 
-from galvo_gui.motion.base import GalvoError
+from galvo_gui.motion import galvo_nea
 from galvo_gui.motion.canon.backend import CanonGalvoBackend
 
 
@@ -39,50 +41,44 @@ class FakeRS232:
     def switch_rs232(self, axis: int) -> None:
         self.calls.append(("switch_rs232", axis))
 
-    def read_position(self, axis: int, target_mode: int = 0) -> int:
-        return 1000 * axis
+
+def _make_backend(monkeypatch, rs232: FakeRS232 | None = None) -> CanonGalvoBackend:
+    monkeypatch.setattr(galvo_nea, "GALVO_AVAILABLE", True)
+    return CanonGalvoBackend(
+        cal_files_path="cal_files",
+        rs232=rs232 or FakeRS232(),
+        board_index=3,
+        program_file="program.hex",
+        serial_port="COM7",
+    )
 
 
-class FakeMotion:
-    def __init__(self) -> None:
-        self.calls = []
-        self.current = (123, -456)
-        self.target = (123, -456)
-
-    def initialize(self, board_index: int = 0, program_file=None) -> None:
-        self.calls.append(("initialize", board_index, program_file))
-
-    def shutdown(self) -> None:
-        self.calls.append(("shutdown",))
-
-    def start(self) -> None:
-        self.calls.append(("start",))
-
-    def stop(self) -> None:
-        self.calls.append(("stop",))
-
-    def read_current_xy_bits(self):
-        self.calls.append(("read_current_xy_bits",))
-        return self.current
-
-    def read_target_xy_bits(self):
-        self.calls.append(("read_target_xy_bits",))
-        return self.target
-
-    def update_positions(self, x_bits: int, y_bits: int) -> None:
-        self.calls.append(("update_positions", x_bits, y_bits))
-        self.current = (x_bits, y_bits)
-        self.target = (x_bits, y_bits)
-
-
-def test_connect_runs_canon_startup_sequence_in_order() -> None:
+def test_connect_runs_real_backend_startup_plus_canon_rs232_sequence(monkeypatch) -> None:
     rs = FakeRS232()
-    motion = FakeMotion()
-    backend = CanonGalvoBackend(rs232=rs, motion=motion, bit_scale_nm=1.0)
+    backend = _make_backend(monkeypatch, rs)
+    calls: list[tuple[str, object]] = []
 
-    backend.connect("COM7")
+    def fake_connect_nea_session(self, host: str) -> None:
+        calls.append(("connect_nea_session", host))
 
-    assert motion.calls[:2] == [("initialize", 0, None), ("start",)]
+    def fake_open_galvo_hardware(self) -> None:
+        calls.append(("open_galvo_hardware", None))
+
+    def fake_complete_connect(self) -> None:
+        calls.append(("complete_connect", None))
+        self._connected = True
+
+    backend._connect_nea_session = MethodType(fake_connect_nea_session, backend)
+    backend._open_galvo_hardware = MethodType(fake_open_galvo_hardware, backend)
+    backend._complete_connect = MethodType(fake_complete_connect, backend)
+
+    backend.connect("nea-host")
+
+    assert calls == [
+        ("connect_nea_session", "nea-host"),
+        ("open_galvo_hardware", None),
+        ("complete_connect", None),
+    ]
     assert rs.calls == [
         ("connect", "COM7"),
         ("clear_error", 1),
@@ -94,85 +90,94 @@ def test_connect_runs_canon_startup_sequence_in_order() -> None:
         ("switch_high_speed", 1),
         ("switch_high_speed", 2),
     ]
+    assert backend.is_connected() is True
 
 
-def test_connect_homes_unsynced_axes() -> None:
+def test_connect_homes_unsynced_axes_before_high_speed(monkeypatch) -> None:
     rs = FakeRS232()
     rs._status[2] = False
-    backend = CanonGalvoBackend(rs232=rs, motion=FakeMotion(), bit_scale_nm=1.0)
+    backend = _make_backend(monkeypatch, rs)
 
-    backend.connect("COM3")
+    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
+    monkeypatch.setattr(backend, "_complete_connect", lambda: setattr(backend, "_connected", True))
+
+    backend.connect("nea-host")
 
     assert ("home", 2) in rs.calls
+    assert rs.calls.index(("home", 2)) < rs.calls.index(("switch_high_speed", 1))
 
 
-def test_disconnect_runs_reverse_sequence() -> None:
+def test_disconnect_restores_rs232_mode_before_real_backend_teardown(monkeypatch) -> None:
     rs = FakeRS232()
-    motion = FakeMotion()
-    backend = CanonGalvoBackend(rs232=rs, motion=motion, bit_scale_nm=1.0)
-    backend.connect("COM2")
+    backend = _make_backend(monkeypatch, rs)
+    backend._connected = True
+    backend._rs232_connected = True
+    backend._gb511_wrap = object()
+    backend._mirror_cls = object()
+    backend._stream_module = object()
+    backend._context = object()
+
+    teardown = []
+
+    def fake_disconnect_nea_session() -> None:
+        teardown.append("disconnect_nea_session")
+
+    monkeypatch.setattr(backend, "_disconnect_nea_session", fake_disconnect_nea_session)
 
     backend.disconnect()
 
-    assert rs.calls[-5:] == [
+    assert rs.calls == [
         ("switch_rs232", 1),
         ("switch_rs232", 2),
         ("servo_off", 1),
         ("servo_off", 2),
         ("disconnect",),
     ]
-    assert motion.calls[-2:] == [("stop",), ("shutdown",)]
+    assert teardown == ["disconnect_nea_session"]
+    assert backend.is_connected() is False
 
 
-def test_move_relative_accumulates_from_target_position_not_stale_current_position() -> None:
-    class MotionWithStaleCurrent(FakeMotion):
-        def __init__(self) -> None:
-            super().__init__()
-            self.target = (0, 0)
+def test_failed_connect_unwinds_rs232_and_nea_session(monkeypatch) -> None:
+    rs = FakeRS232()
+    backend = _make_backend(monkeypatch, rs)
+    teardown = []
 
-        def read_current_xy_bits(self):
-            self.calls.append(("read_current_xy_bits",))
-            return (0, 0)
+    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: teardown.append(("nea", host)))
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: teardown.append(("galvo", None)))
+    monkeypatch.setattr(
+        backend,
+        "_complete_connect",
+        lambda: (_ for _ in ()).throw(RuntimeError("readback failed")),
+    )
 
-        def read_target_xy_bits(self):
-            self.calls.append(("read_target_xy_bits",))
-            return self.target
+    def fake_disconnect_nea_session() -> None:
+        teardown.append(("disconnect_nea_session", None))
 
-        def update_positions(self, x_bits: int, y_bits: int) -> None:
-            self.calls.append(("update_positions", x_bits, y_bits))
-            self.target = (x_bits, y_bits)
+    monkeypatch.setattr(backend, "_disconnect_nea_session", fake_disconnect_nea_session)
 
-    motion = MotionWithStaleCurrent()
-    backend = CanonGalvoBackend(rs232=FakeRS232(), motion=motion, bit_scale_nm=1.0)
-    backend._connected = True
+    with pytest.raises(RuntimeError, match="readback failed"):
+        backend.connect("nea-host")
 
-    backend.move_relative(100.0, 0.0)
-    backend.move_relative(100.0, 0.0)
-
-    assert [call for call in motion.calls if call[0] == "update_positions"] == [
-        ("update_positions", 100, 0),
-        ("update_positions", 200, 0),
+    assert teardown == [
+        ("nea", "nea-host"),
+        ("galvo", None),
+        ("disconnect_nea_session", None),
     ]
-
-
-def test_scan_is_rejected_for_canon_backend() -> None:
-    backend = CanonGalvoBackend(rs232=FakeRS232(), motion=FakeMotion(), bit_scale_nm=1.0)
-
-    with pytest.raises(GalvoError, match="scan imaging is disabled"):
-        backend.scan(1.0, 1.0, 1, 1, 0.0, 0.0, lambda *_: None, lambda: False)
-
-
-def test_set_home_redefines_origin_and_goto_center() -> None:
-    motion = FakeMotion()
-    backend = CanonGalvoBackend(rs232=FakeRS232(), motion=motion, bit_scale_nm=2.0)
-    backend._connected = True
-
-    assert backend.set_home() == (246.0, -912.0)
-    assert backend.read_xy_nm() == (0.0, 0.0)
-
-    motion.current = (140, -400)
-    motion.target = (140, -400)
-    assert backend.read_xy_nm() == (34.0, 112.0)
-
-    backend.goto_center()
-    assert motion.calls[-1] == ("update_positions", 123, -456)
+    assert rs.calls == [
+        ("connect", "COM7"),
+        ("clear_error", 1),
+        ("clear_error", 2),
+        ("servo_on", 1),
+        ("servo_on", 2),
+        ("read_status", 1),
+        ("read_status", 2),
+        ("switch_high_speed", 1),
+        ("switch_high_speed", 2),
+        ("switch_rs232", 1),
+        ("switch_rs232", 2),
+        ("servo_off", 1),
+        ("servo_off", 2),
+        ("disconnect",),
+    ]
+    assert backend.is_connected() is False

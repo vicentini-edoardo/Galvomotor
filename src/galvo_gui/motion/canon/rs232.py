@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
-from serial import Serial
-from serial.tools import list_ports
+try:
+    from serial import Serial as _PySerial
+    from serial.tools import list_ports
+
+    _SERIAL_AVAILABLE = True
+except ImportError:
+    _PySerial = None
+    _SERIAL_AVAILABLE = False
+
+    class _MissingListPorts:
+        @staticmethod
+        def comports() -> list[object]:
+            return []
+
+    list_ports = _MissingListPorts()
 
 from galvo_gui.motion.base import GalvoError
 
@@ -32,14 +45,16 @@ class CanonErrors:
 class CanonRS232:
     def __init__(
         self,
-        serial_factory: Callable[..., Serial] = Serial,
+        serial_factory: Callable[..., Any] | None = None,
         port_selector: Callable[[], str] | None = None,
     ) -> None:
-        self._serial_factory = serial_factory
+        self._serial_factory = serial_factory or _PySerial
         self._port_selector = port_selector or self.auto_detect_port
         self._ser = None
 
     def connect(self, port: str | None = None, timeout_s: float = 0.5) -> None:
+        if self._serial_factory is None:
+            raise GalvoError("pyserial is not installed; Canon RS-232 is unavailable.")
         selected = port or self._port_selector()
         if not selected:
             raise GalvoError("No Canon RS-232 port found.")
