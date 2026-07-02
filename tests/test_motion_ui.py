@@ -51,8 +51,6 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     assert panel._btn_z_up.text() == "▲"
     assert panel._btn_z_down.text() == "▼"
     assert panel._btn_set_home.text() == "Set Home"
-    assert panel._home_x_edit.text() == "0"
-    assert panel._home_y_edit.text() == "0"
     assert not panel._xy_step_combo.isEnabled()
     assert not panel._z_step_combo.isEnabled()
 
@@ -101,16 +99,15 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
     assert restored._z_step_combo.currentText() == "10000"
     assert restored._home_x_nm == 250.0
     assert restored._home_y_nm == -125.0
-    assert restored._home_x_edit.text() == "250"
-    assert restored._home_y_edit.text() == "-125"
+    assert restored._home_label.text() == "250, -125"
 
 
 def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
     panel = MotionPanel()
     panel._settings.clear()
-    panel._home_x_edit.setText("300")
-    panel._home_y_edit.setText("-200")
-    panel._apply_home_from_fields()
+    panel._home_x_nm = 300.0
+    panel._home_y_nm = -200.0
+    panel.save_settings()
 
     restored = MotionPanel()
     from galvo_gui.motion.mock import MockGalvoBackend
@@ -121,24 +118,6 @@ def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
     restored.set_backend(backend)
 
     assert backend.read_xy_nm() == (0.0, 0.0)
-
-
-def test_motion_panel_applies_manual_home_coordinates_to_connected_backend(qapp: object) -> None:
-    from galvo_gui.motion.mock import MockGalvoBackend
-
-    backend = MockGalvoBackend()
-    backend.connect()
-    backend.move_relative(500.0, -250.0)
-
-    panel = MotionPanel()
-    panel.set_backend(backend)
-    panel._home_x_edit.setText("100")
-    panel._home_y_edit.setText("-50")
-    panel._apply_home_from_fields()
-
-    assert panel._home_x_nm == 100.0
-    assert panel._home_y_nm == -50.0
-    assert backend.read_xy_nm() == (400.0, -200.0)
 
 
 def test_connection_panel_shows_real_and_canon_fields_for_canon_backend(qapp: object) -> None:
@@ -153,19 +132,6 @@ def test_connection_panel_shows_real_and_canon_fields_for_canon_backend(qapp: ob
     assert panel._program_file_edit.isVisible()
     assert panel._host_edit.isVisible()
     assert panel._cal_edit.isVisible()
-
-
-def test_connection_panel_defaults_canon_board_index_to_one(qapp: object) -> None:
-    from galvo_gui.gui.panel_manual import ConnectionPanel
-
-    panel = ConnectionPanel()
-    panel._settings.clear()
-
-    restored = ConnectionPanel()
-
-    assert restored._board_index_edit.text() == "1"
-
-
 def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
     import time
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMetaObject, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -537,13 +536,7 @@ class MotionPanel(QWidget):
 
         self._x_label = self._build_motion_readout("--")
         self._y_label = self._build_motion_readout("--")
-        self._home_x_edit = QLineEdit("0")
-        self._home_y_edit = QLineEdit("0")
-        home_validator = QDoubleValidator(self)
-        for edit in (self._home_x_edit, self._home_y_edit):
-            edit.setValidator(home_validator)
-            edit.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            edit.editingFinished.connect(self._apply_home_from_fields)
+        self._home_label = self._build_motion_readout("0, 0", home=True)
         self._btn_set_home = QPushButton("Set Home")
         self._btn_set_home.clicked.connect(self._set_home)
 
@@ -552,7 +545,7 @@ class MotionPanel(QWidget):
         readouts.addWidget(self._build_readout_column("X live", self._x_label))
         readouts.addWidget(self._build_readout_column("Y live", self._y_label))
         readouts.addSpacing(2)
-        readouts.addWidget(self._build_home_editor())
+        readouts.addWidget(self._build_readout_column("Home", self._home_label))
         readouts.addWidget(self._btn_set_home, alignment=Qt.AlignmentFlag.AlignLeft)
         readouts.addStretch()
         body.addLayout(readouts, 1)
@@ -625,27 +618,6 @@ class MotionPanel(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         return label
 
-    def _build_home_editor(self) -> QWidget:
-        widget = QWidget()
-        layout = QGridLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(8)
-        layout.setVerticalSpacing(4)
-
-        caption = QLabel("Home (nm)")
-        caption.setObjectName("MotionReadoutCaption")
-        layout.addWidget(caption, 0, 0, 1, 2)
-
-        x_label = QLabel("X")
-        x_label.setObjectName("MotionInlineLabel")
-        y_label = QLabel("Y")
-        y_label.setObjectName("MotionInlineLabel")
-        layout.addWidget(x_label, 1, 0)
-        layout.addWidget(self._home_x_edit, 1, 1)
-        layout.addWidget(y_label, 2, 0)
-        layout.addWidget(self._home_y_edit, 2, 1)
-        return widget
-
     def _build_readout_column(self, title: str, value_label: ReadoutLabel) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -661,11 +633,7 @@ class MotionPanel(QWidget):
     def set_backend(self, backend: GalvoBackend) -> None:
         self._backend = backend
         try:
-            self._home_x_nm, self._home_y_nm = self._backend.set_home(
-                self._home_x_nm,
-                self._home_y_nm,
-            )
-            self._sync_home_fields()
+            self._backend.set_home(self._home_x_nm, self._home_y_nm)
         except Exception as exc:  # noqa: BLE001
             self.log_message.emit(f"Home restore error: {exc}")
         self._apply_step_availability()
@@ -715,7 +683,7 @@ class MotionPanel(QWidget):
             return
         try:
             self._home_x_nm, self._home_y_nm = self._backend.set_home()
-            self._sync_home_fields()
+            self._update_home_label()
             self.save_settings()
             self._refresh_position()
             self.log_message.emit(
@@ -723,33 +691,6 @@ class MotionPanel(QWidget):
             )
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Set home error: {exc}")
-
-    def _apply_home_from_fields(self) -> None:
-        try:
-            home_x_nm = float(self._home_x_edit.text())
-            home_y_nm = float(self._home_y_edit.text())
-        except ValueError:
-            self._sync_home_fields()
-            self.log_message.emit("Set home error: invalid home coordinates.")
-            return
-
-        try:
-            if self._backend is not None and self._backend.is_connected():
-                home_x_nm, home_y_nm = self._backend.set_home(home_x_nm, home_y_nm)
-        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
-            self._sync_home_fields()
-            self.log_message.emit(f"Set home error: {exc}")
-            return
-
-        self._home_x_nm = home_x_nm
-        self._home_y_nm = home_y_nm
-        self._sync_home_fields()
-        self.save_settings()
-        if self._backend is not None and self._backend.is_connected():
-            self._refresh_position()
-            self.log_message.emit(
-                f"Home set to ({self._home_x_nm:.0f}, {self._home_y_nm:.0f}) nm"
-            )
 
     def _refresh_position(self) -> None:
         if self._backend is None or not self._backend.is_connected():
@@ -846,7 +787,7 @@ class MotionPanel(QWidget):
             self._home_x_nm = float(self._settings.value("home_x_nm", 0.0))
         with contextlib.suppress(Exception):
             self._home_y_nm = float(self._settings.value("home_y_nm", 0.0))
-        self._sync_home_fields()
+        self._update_home_label()
 
     def save_settings(self) -> None:
         self._settings.setValue("xy_step_nm", self._xy_step_combo.currentText())
@@ -854,9 +795,8 @@ class MotionPanel(QWidget):
         self._settings.setValue("home_x_nm", self._home_x_nm)
         self._settings.setValue("home_y_nm", self._home_y_nm)
 
-    def _sync_home_fields(self) -> None:
-        self._home_x_edit.setText(f"{self._home_x_nm:.0f}")
-        self._home_y_edit.setText(f"{self._home_y_nm:.0f}")
+    def _update_home_label(self) -> None:
+        self._home_label.setText(f"{self._home_x_nm:.0f}, {self._home_y_nm:.0f}")
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
