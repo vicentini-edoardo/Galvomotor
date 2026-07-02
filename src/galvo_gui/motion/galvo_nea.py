@@ -99,26 +99,24 @@ class GalvoNeaBackend(GalvoBackend):
         self._complete_connect()
 
     def disconnect(self) -> None:
-        was_connected = self._connected
+        should_disconnect_session = self._connected or self._loop is not None
         # ponytail: keep galvo_functions open — no close_galvo() in notebooks
         self._connected = False
         self._gb511_wrap = None
         self._mirror_cls = None
         self._stream_module = None
         self._context = None
-        if was_connected:
+        if should_disconnect_session:
             self._disconnect_nea_session()
 
     def is_connected(self) -> bool:
         return self._connected
 
     def _connect_nea_session(self, host: str) -> None:
-        # Always create a fresh event loop to avoid reusing a closed loop
-        # from a previous session (see Andor nea_snom.py:55-61).
-        with contextlib.suppress(Exception):
-            old_loop = asyncio.get_event_loop()
-            if not old_loop.is_closed():
-                old_loop.close()
+        # Always create a fresh event loop for each nea_tools session.
+        # Reusing or leaking the previous loop leaves the SDK half-open and
+        # the next connect can hang on the microscope handshake.
+        self._close_backend_loop()
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         nest_asyncio.apply(self._loop)
@@ -173,10 +171,33 @@ class GalvoNeaBackend(GalvoBackend):
         self._connected = True
 
     def _disconnect_nea_session(self) -> None:
+        loop = self._loop
+        try:
+            if loop is not None and not loop.is_closed():
+                with contextlib.suppress(Exception):
+                    asyncio.set_event_loop(loop)
+            with contextlib.suppress(Exception):
+                disconnect_result = nea_tools.disconnect()
+                if inspect.isawaitable(disconnect_result):
+                    if loop is not None and not loop.is_closed():
+                        loop.run_until_complete(disconnect_result)
+                    else:
+                        asyncio.run(disconnect_result)
+        finally:
+            self._close_backend_loop()
+
+    def _close_backend_loop(self) -> None:
+        loop = self._loop
+        self._loop = None
+        if loop is None:
+            return
         with contextlib.suppress(Exception):
-            disconnect_result = nea_tools.disconnect()
-            if inspect.isawaitable(disconnect_result) and self._loop is not None:
-                self._loop.run_until_complete(disconnect_result)
+            current_loop = asyncio.get_event_loop()
+            if current_loop is loop:
+                asyncio.set_event_loop(None)
+        with contextlib.suppress(Exception):
+            if not loop.is_closed():
+                loop.close()
 
     # ------------------------------------------------------------------
     # Motion

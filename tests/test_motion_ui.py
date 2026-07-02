@@ -278,3 +278,40 @@ def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(qapp, 
         "serial_port": "COM8",
     }
     assert captured["connect_host"] == "nea-server"
+
+
+def test_connection_panel_does_not_force_invalid_canon_board_index(qapp, monkeypatch) -> None:
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+    import galvo_gui.motion.canon.backend as canon_backend_module
+
+    captured = {}
+
+    class FakeCanonBackend:
+        def __init__(
+            self,
+            cal_files_path="",
+            *,
+            board_index=None,
+            program_file=None,
+            serial_port=None,
+        ) -> None:
+            captured["board_index"] = board_index
+
+        def connect(self, host="") -> None:
+            return None
+
+        def disconnect(self) -> None:
+            return None
+
+        def is_connected(self) -> bool:
+            return True
+
+    monkeypatch.setattr(canon_backend_module, "CanonGalvoBackend", FakeCanonBackend)
+
+    panel = ConnectionPanel()
+    panel._backend_combo.setCurrentIndex(2)
+    panel._board_index_edit.setText("0")
+    panel._connect()
+    _process_until(qapp, lambda: panel._backend is not None)
+
+    assert captured["board_index"] is None

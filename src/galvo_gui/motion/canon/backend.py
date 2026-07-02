@@ -21,7 +21,7 @@ class CanonGalvoBackend(GalvoNeaBackend):
         self,
         cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH),
         rs232: CanonRS232 | None = None,
-        board_index: int = 0,
+        board_index: int | None = None,
         program_file: str | None = None,
         serial_port: str | None = None,
     ) -> None:

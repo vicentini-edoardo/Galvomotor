@@ -266,17 +266,31 @@ def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
 
 
 def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:
-    awaited = {"disconnect_called": False, "run_until_complete_called": False}
+    awaited = {
+        "disconnect_called": False,
+        "run_until_complete_called": False,
+        "loop_closed": False,
+    }
 
     async def fake_disconnect() -> None:
         awaited["disconnect_called"] = True
 
     class FakeLoop:
+        def __init__(self) -> None:
+            self._closed = False
+
         def run_until_complete(self, awaitable):
             awaited["run_until_complete_called"] = True
             import asyncio
 
             return asyncio.run(awaitable)
+
+        def is_closed(self) -> bool:
+            return self._closed
+
+        def close(self) -> None:
+            awaited["loop_closed"] = True
+            self._closed = True
 
     monkeypatch.setattr(
         galvo_nea,
@@ -295,4 +309,6 @@ def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:
 
     assert awaited["run_until_complete_called"] is True
     assert awaited["disconnect_called"] is True
+    assert awaited["loop_closed"] is True
     assert backend._connected is False
+    assert backend._loop is None
