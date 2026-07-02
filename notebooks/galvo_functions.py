@@ -8,7 +8,7 @@ import numpy as np
 
 from datetime import datetime
 
-def open_galvo(idx_board=0,idx_port=2,CalFn=r".\GM-2020.tsc"):
+def open_galvo(idx_board=1,idx_port=2,CalFn=r".\GM-2020.tsc"):
     gb511_wrap = ctypes.WinDLL(r".\CanonGB511.dll")
     dspfile = 'gbdsp.hex'
     

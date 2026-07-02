@@ -155,7 +155,7 @@ def test_connection_panel_shows_real_and_canon_fields_for_canon_backend(qapp: ob
     assert panel._cal_edit.isVisible()
 
 
-def test_connection_panel_defaults_canon_board_index_to_zero(qapp: object) -> None:
+def test_connection_panel_defaults_canon_board_index_to_one(qapp: object) -> None:
     from galvo_gui.gui.panel_manual import ConnectionPanel
 
     panel = ConnectionPanel()
@@ -163,7 +163,7 @@ def test_connection_panel_defaults_canon_board_index_to_zero(qapp: object) -> No
 
     restored = ConnectionPanel()
 
-    assert restored._board_index_edit.text() == "0"
+    assert restored._board_index_edit.text() == "1"
 
 
 def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
@@ -401,7 +401,7 @@ def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(
     assert captured["connect_host"] == "nea-server"
 
 
-def test_connection_panel_passes_zero_canon_board_index(qapp, monkeypatch) -> None:
+def test_connection_panel_does_not_force_invalid_canon_board_index(qapp, monkeypatch) -> None:
     import galvo_gui.motion.canon.backend as canon_backend_module
     from galvo_gui.gui.panel_manual import ConnectionPanel
 
@@ -435,4 +435,4 @@ def test_connection_panel_passes_zero_canon_board_index(qapp, monkeypatch) -> No
     panel._connect()
     _process_until(qapp, lambda: panel._backend is not None)
 
-    assert captured["board_index"] == 0
+    assert captured["board_index"] is None

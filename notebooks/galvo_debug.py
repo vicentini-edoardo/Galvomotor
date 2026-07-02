@@ -395,7 +395,7 @@ def main() -> None:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dir", help="folder containing CanonGB511.dll etc.")
     parser.add_argument("--port", type=int, default=2, help="0=PCIe 1=LAN 2=USB (default 2)")
-    parser.add_argument("--board", type=int, default=0, help="board index (default 0)")
+    parser.add_argument("--board", type=int, default=1, help="board index (default 1)")
     parser.add_argument("--scan-board", action="store_true",
                         help="try every port/board combination")
     parser.add_argument("--sweep", type=int, nargs="+", default=DEFAULT_SWEEP,

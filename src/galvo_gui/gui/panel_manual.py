@@ -140,7 +140,7 @@ class ConnectionPanel(QWidget):
         grid.addWidget(self._serial_port_edit, 3, 1, 1, 2)
 
         grid.addWidget(QLabel("Board index:"), 4, 0)
-        self._board_index_edit = QLineEdit("0")
+        self._board_index_edit = QLineEdit("1")
         grid.addWidget(self._board_index_edit, 4, 1, 1, 2)
 
         grid.addWidget(QLabel("Program file:"), 5, 0)
@@ -221,7 +221,7 @@ class ConnectionPanel(QWidget):
 
             board_index_text = self._board_index_edit.text().strip()
             board_index = int(board_index_text) if board_index_text else None
-            if board_index is not None and board_index < 0:
+            if board_index is not None and board_index <= 0:
                 board_index = None
             program_file = self._program_file_edit.text().strip() or None
             serial_port = self._serial_port_edit.text().strip() or None
@@ -391,9 +391,9 @@ class ConnectionPanel(QWidget):
         serial_port = s.value("canon_serial_port", "")
         if isinstance(serial_port, str):
             self._serial_port_edit.setText(serial_port)
-        board_index = s.value("canon_board_index", "0")
+        board_index = s.value("canon_board_index", "1")
         if isinstance(board_index, str):
-            self._board_index_edit.setText(board_index)
+            self._board_index_edit.setText("1" if board_index.strip() == "0" else board_index)
         program_file = s.value("canon_program_file", "")
         if isinstance(program_file, str):
             self._program_file_edit.setText(program_file)
