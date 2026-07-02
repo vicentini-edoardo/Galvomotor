@@ -6,7 +6,9 @@ from typing import Callable
 
 from galvo_gui.motion.base import GalvoError
 
-_DEFAULT_DLL_PATH = Path(__file__).resolve().parents[4] / "config_files" / "CanonGB511.dll"
+_CONFIG_FILES_DIR = Path(__file__).resolve().parents[4] / "config_files"
+_DEFAULT_DLL_PATH = _CONFIG_FILES_DIR / "CanonGB511.dll"
+_DEFAULT_PROGRAM_FILE_PATH = _CONFIG_FILES_DIR / "gbdsp.hex"
 _DEFAULT_DLL_LOADER = getattr(ctypes, "WinDLL", ctypes.CDLL)
 
 
@@ -25,6 +27,8 @@ class GB511MotionController:
         self._dll = self._dll_loader(self._dll_path)
         self._call("gb511_open", board_index)
         self._call("ctr_reset_param")
+        if program_file is None and _DEFAULT_PROGRAM_FILE_PATH.exists():
+            program_file = str(_DEFAULT_PROGRAM_FILE_PATH)
         if program_file:
             self._call("ctr_load_program_file", program_file.encode("mbcs"))
 
