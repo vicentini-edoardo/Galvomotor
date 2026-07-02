@@ -85,6 +85,7 @@ class GalvoNeaBackend(GalvoBackend):
         self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
         self._z0_nm: float = 0.0
         self._z_nm: float = 0.0
+        self._z_reference_ready = False
         self._home_x_nm: float = 0.0
         self._home_y_nm: float = 0.0
         self._status_callback: Callable[[str], None] | None = None
@@ -116,6 +117,8 @@ class GalvoNeaBackend(GalvoBackend):
         self._mirror_cls = None
         self._stream_module = None
         self._context = None
+        self._z_reference_ready = False
+        self._z_nm = 0.0
         if should_disconnect_session:
             self._disconnect_nea_session()
         self._report_status("Disconnect complete.")
@@ -191,10 +194,11 @@ class GalvoNeaBackend(GalvoBackend):
         # connecting into a dead board that silently ignores every move.
         self._read_gb511_bits()
         self._report_status("GB511 position read-back OK.")
-        self._z0_nm = self._read_absolute_mirror_z_nm()
+        self._z0_nm = 0.0
         self._z_nm = 0.0
+        self._z_reference_ready = False
         self._connected = True
-        self._report_status("Mirror Z reference captured.")
+        self._report_status("Mirror Z reference deferred until first Z move.")
 
     def _disconnect_nea_session(self) -> None:
         loop = self._loop
@@ -261,6 +265,7 @@ class GalvoNeaBackend(GalvoBackend):
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
+        self._ensure_z_reference()
         with self._open_mirror() as mirror:
             mirror.go_relative(0, 0, dz_nm)
             self._wait_for_mirror(mirror)
@@ -479,6 +484,15 @@ class GalvoNeaBackend(GalvoBackend):
     def _read_absolute_mirror_z_nm(self) -> float:
         with self._open_mirror() as mirror:
             return float(mirror.absolute_position[2])
+
+    def _ensure_z_reference(self) -> None:
+        if getattr(self, "_z_reference_ready", False):
+            return
+        self._report_status("Capturing mirror Z reference...")
+        self._z0_nm = self._read_absolute_mirror_z_nm()
+        self._z_nm = 0.0
+        self._z_reference_ready = True
+        self._report_status("Mirror Z reference captured.")
 
     def _open_mirror(self):  # type: ignore[no-untyped-def]
         self._require_connected_or_ready()

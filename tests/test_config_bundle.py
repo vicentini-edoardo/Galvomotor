@@ -229,12 +229,67 @@ def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
     backend._loop = None
     backend._z0_nm = 100.0
     backend._z_nm = 0.0
+    backend._z_reference_ready = True
 
     assert backend.read_z_nm() == 0.0
     assert FakeMirror.instances == 0
     backend.move_z_relative(25.0)
     assert backend.read_z_nm() == 25.0
     assert FakeMirror.instances == 1
+
+
+def test_complete_connect_does_not_touch_mirror_reference(monkeypatch) -> None:
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._status_callback = None
+    backend._connected = False
+    backend._z0_nm = 123.0
+    backend._z_nm = 456.0
+    backend._z_reference_ready = True
+    backend._read_gb511_bits = lambda: (1, 2)
+    backend._read_absolute_mirror_z_nm = lambda: (_ for _ in ()).throw(
+        AssertionError("mirror should not be touched during connect")
+    )
+
+    backend._complete_connect()
+
+    assert backend._connected is True
+    assert backend._z0_nm == 0.0
+    assert backend._z_nm == 0.0
+    assert backend._z_reference_ready is False
+
+
+def test_move_z_relative_captures_reference_lazily() -> None:
+    class FakeMirror:
+        instances = 0
+
+        def __init__(self) -> None:
+            type(self).instances += 1
+            self.absolute_position = [0.0, 0.0, 100.0]
+
+        def __enter__(self) -> FakeMirror:
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def go_relative(self, dx: float, dy: float, dz: float) -> None:
+            self.absolute_position[2] += dz
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._status_callback = None
+    backend._connected = True
+    backend._mirror_cls = FakeMirror
+    backend._loop = None
+    backend._z0_nm = 0.0
+    backend._z_nm = 0.0
+    backend._z_reference_ready = False
+
+    backend.move_z_relative(25.0)
+
+    assert backend.read_z_nm() == 25.0
+    assert backend._z0_nm == 100.0
+    assert backend._z_reference_ready is True
+    assert FakeMirror.instances == 2
 
 
 def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
