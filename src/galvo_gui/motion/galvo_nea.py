@@ -66,11 +66,21 @@ _READBACK_SENTINEL = -(2**19)
 #     re-running open_galvo() on the live board (reloading the DSP program
 #     and re-selecting the board) kills the read-back — both axes then report
 #     _READBACK_SENTINEL and every move is silently ignored.
-#   - neaspec/nea_tools capture the asyncio loop that is current when they
-#     are first imported; a reconnect that presents a fresh loop leaves
-#     mirror waits pending on the dead one, hanging the first Z move.
+#   - nea_tools does not survive a disconnect→connect cycle inside one
+#     process: after calling nea_tools.disconnect(), the next session hangs
+#     in the mirror path (Z reference read or the first Z move) no matter
+#     how the asyncio loop is managed.  The session opened first therefore
+#     stays live for the whole process — like the lab notebooks, which
+#     connect once per kernel — and every later connect adopts it.
 _GB511_SHARED: dict[str, Any] = {"wrap": None, "kwargs": None}
-_BACKEND_LOOP: Any = None
+_NEA_SESSION: dict[str, Any] = {
+    "loop": None,
+    "host": None,
+    "connected": False,
+    "context": None,
+    "stream": None,
+    "mirror_cls": None,
+}
 
 
 class GalvoNeaBackend(GalvoBackend):
@@ -153,27 +163,48 @@ class GalvoNeaBackend(GalvoBackend):
             callback(f"{backend_label}: {message}")
 
     def _connect_nea_session(self, host: str) -> None:
-        global _BACKEND_LOOP  # noqa: PLW0603 — process-wide SDK state, see top of module
-        # One event loop for the whole process: the SDK modules imported
-        # below capture the loop that is current on first import, so every
-        # later session (reconnects) must present that same loop again.
-        # Closing it per session left mirror waits hanging on the dead loop.
-        if _BACKEND_LOOP is None or _BACKEND_LOOP.is_closed():
-            _BACKEND_LOOP = asyncio.new_event_loop()
-            nest_asyncio.apply(_BACKEND_LOOP)
-        self._loop = _BACKEND_LOOP
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(
+        session = _NEA_SESSION
+        if session["connected"] and session["host"] == host:
+            # nea_tools cannot re-connect inside one process (see the note at
+            # the top of the module): adopt the live session instead.
+            self._adopt_nea_session()
+            self._report_status("Reusing live neaSNOM session.")
+            return
+        if session["connected"]:
+            self._report_status(
+                "Host changed; closing the previous neaSNOM session. If the "
+                "new connection hangs, restart the application."
+            )
+            self._shutdown_nea_session()
+        loop = session["loop"]
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            nest_asyncio.apply(loop)
+            session["loop"] = loop
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
         )
         # These imports only work after nea_tools.connect has loaded the SDK.
         import neaspec  # noqa: PLC0415
         from nea_tools.microscope import stream  # noqa: PLC0415
         from nea_tools.microscope.motors import Mirror  # noqa: PLC0415
-        self._context = neaspec.context
-        self._stream_module = stream
-        self._mirror_cls = Mirror
+        session["host"] = host
+        session["connected"] = True
+        session["context"] = neaspec.context
+        session["stream"] = stream
+        session["mirror_cls"] = Mirror
+        self._adopt_nea_session()
         self._report_status("neaSNOM SDK objects loaded.")
+
+    def _adopt_nea_session(self) -> None:
+        self._loop = _NEA_SESSION["loop"]
+        with contextlib.suppress(Exception):
+            asyncio.set_event_loop(self._loop)
+        self._context = _NEA_SESSION["context"]
+        self._stream_module = _NEA_SESSION["stream"]
+        self._mirror_cls = _NEA_SESSION["mirror_cls"]
 
     def _open_galvo_hardware(self) -> None:
         # Initialise galvo hardware (independent of neaSNOM connection).
@@ -237,9 +268,17 @@ class GalvoNeaBackend(GalvoBackend):
         self._report_status("Mirror Z reference captured.")
 
     def _disconnect_nea_session(self) -> None:
-        loop = self._loop
+        # Deliberately NOT nea_tools.disconnect(): the SDK cannot re-connect
+        # inside one process (reconnects then hang in the mirror path), so
+        # the session stays live for the next connection and dies with the
+        # process — like the lab notebooks, which connect once per kernel.
         self._loop = None
-        self._report_status("Closing neaSNOM session...")
+        self._report_status("Keeping neaSNOM session open for the next connection.")
+
+    def _shutdown_nea_session(self) -> None:
+        """Really close the nea session (host change only — see module note)."""
+        session = _NEA_SESSION
+        loop = session["loop"]
         try:
             if loop is not None and not loop.is_closed():
                 with contextlib.suppress(Exception):
@@ -256,10 +295,12 @@ class GalvoNeaBackend(GalvoBackend):
 
                         asyncio.run(_await_disconnect(disconnect_result))
         finally:
-            # The loop itself deliberately stays open for the process — the
-            # SDK modules captured it at first import and the next session
-            # must reuse it (see _connect_nea_session).
-            self._report_status("neaSNOM session closed.")
+            session["host"] = None
+            session["connected"] = False
+            session["context"] = None
+            session["stream"] = None
+            session["mirror_cls"] = None
+            self._report_status("Previous neaSNOM session closed.")
 
     # ------------------------------------------------------------------
     # Motion
