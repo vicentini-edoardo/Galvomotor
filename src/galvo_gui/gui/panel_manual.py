@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from typing import Callable
 
-from PyQt6.QtCore import QSettings, QTimer, pyqtSignal
+from PyQt6.QtCore import QSettings, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -29,6 +30,30 @@ from galvo_gui.motion.base import (
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 
 
+class _BackendOpWorker(QThread):
+    """Run a blocking backend operation (connect/disconnect) off the GUI thread.
+
+    nea_tools.connect/disconnect and DLL/serial initialisation can block for
+    many seconds (or hang on a dead server); on the GUI thread that freezes
+    the whole window at the connection/disconnection stage.
+    """
+
+    succeeded = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self, op: Callable[[], None], parent: QWidget | None = None) -> None:
+        super().__init__(parent)  # type: ignore[arg-type]
+        self._op = op
+
+    def run(self) -> None:
+        try:
+            self._op()
+        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit()
+
+
 class ConnectionPanel(QWidget):
     """Connection settings and lifecycle for the shared backend instance."""
 
@@ -39,6 +64,9 @@ class ConnectionPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._backend: GalvoBackend | None = None
+        self._op_worker: _BackendOpWorker | None = None
+        self._pending_backend: GalvoBackend | None = None
+        self._pending_name = ""
         self._settings = QSettings("galvo_gui", "ManualPanel")
         self._build_ui()
         self._restore_settings()
@@ -130,6 +158,8 @@ class ConnectionPanel(QWidget):
             self._cal_edit.setText(path)
 
     def _on_connect_toggle(self) -> None:
+        if self._op_worker is not None and self._op_worker.isRunning():
+            return  # connect/disconnect already in flight
         if self._backend is not None and self._backend.is_connected():
             self._disconnect()
         else:
@@ -155,7 +185,11 @@ class ConnectionPanel(QWidget):
                 backend = MockGalvoBackend()
                 used_mock_fallback = True
             else:
-                backend = GalvoNeaBackend(self._cal_edit.text())
+                try:
+                    backend = GalvoNeaBackend(self._cal_edit.text())
+                except Exception as exc:  # noqa: BLE001
+                    self._log.append_line(f"Connection failed: {exc}")
+                    return
         else:
             from galvo_gui.motion.canon.backend import CanonGalvoBackend
 
@@ -168,46 +202,85 @@ class ConnectionPanel(QWidget):
                 serial_port=serial_port,
             )
 
-        try:
-            host = self._host_edit.text().strip() or "nea-server"
-            backend.connect(host)
-        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
-            self._log.append_line(f"Connection failed: {exc}")
-            return
-
-        self._backend = backend
-        self._backend_combo.setEnabled(False)
-        self._connect_btn.setText("Disconnect")
-        self._connect_btn.setProperty("accent", False)
-        self._connect_btn.style().unpolish(self._connect_btn)  # type: ignore[union-attr]
-        self._connect_btn.style().polish(self._connect_btn)    # type: ignore[union-attr]
-
         if index == 0:
-            name = "Mock"
+            self._pending_name = "Mock"
         elif used_mock_fallback:
-            name = "Mock (fallback)"
+            self._pending_name = "Mock (fallback)"
         else:
-            name = "Real"
-        self._log.append_line(f"Connected ({name} backend).")
-        self.log_message.emit(f"Galvo connected ({name})")
+            self._pending_name = "Real" if index == 1 else "Canon"
+
+        host = self._host_edit.text().strip() or "nea-server"
+        self._pending_backend = backend
+        self._set_button_state("Connecting…", accent=True, enabled=False)
+        self._backend_combo.setEnabled(False)
+        self._start_op(lambda: backend.connect(host), self._on_connect_succeeded,
+                       self._on_connect_failed)
+
+    def _on_connect_succeeded(self) -> None:
+        self._finish_op()
+        self._backend = self._pending_backend
+        self._pending_backend = None
+        self._set_button_state("Disconnect", accent=False, enabled=True)
+        self._log.append_line(f"Connected ({self._pending_name} backend).")
+        self.log_message.emit(f"Galvo connected ({self._pending_name})")
         self.backend_connected.emit(self._backend)
+
+    def _on_connect_failed(self, message: str) -> None:
+        self._finish_op()
+        self._pending_backend = None
+        self._log.append_line(f"Connection failed: {message}")
+        self._set_button_state("Connect", accent=True, enabled=True)
+        self._backend_combo.setEnabled(True)
 
     def _disconnect(self) -> None:
         if self._backend is None:
             return
-        try:
-            self._backend.disconnect()
-        except Exception as exc:  # noqa: BLE001
-            self._log.append_line(f"Disconnect error: {exc}")
+        backend = self._backend
+        # Detach the backend from the rest of the GUI first so the position
+        # poller and scan panel stop touching hardware during teardown.
         self._backend = None
-        self._backend_combo.setEnabled(True)
-        self._connect_btn.setText("Connect")
-        self._connect_btn.setProperty("accent", True)
-        self._connect_btn.style().unpolish(self._connect_btn)  # type: ignore[union-attr]
-        self._connect_btn.style().polish(self._connect_btn)    # type: ignore[union-attr]
+        self.backend_disconnected.emit()
+        self._set_button_state("Disconnecting…", accent=False, enabled=False)
+        self._start_op(backend.disconnect, self._on_disconnect_succeeded,
+                       self._on_disconnect_failed)
+
+    def _on_disconnect_succeeded(self) -> None:
+        self._finish_op()
         self._log.append_line("Disconnected.")
         self.log_message.emit("Galvo disconnected")
-        self.backend_disconnected.emit()
+        self._set_button_state("Connect", accent=True, enabled=True)
+        self._backend_combo.setEnabled(True)
+
+    def _on_disconnect_failed(self, message: str) -> None:
+        self._finish_op()
+        self._log.append_line(f"Disconnect error: {message}")
+        self.log_message.emit("Galvo disconnected")
+        self._set_button_state("Connect", accent=True, enabled=True)
+        self._backend_combo.setEnabled(True)
+
+    def _start_op(
+        self,
+        op: Callable[[], None],
+        on_success: Callable[[], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        worker = _BackendOpWorker(op, self)
+        # Bound-method slots run queued on the GUI thread, never in the worker.
+        worker.succeeded.connect(on_success)
+        worker.failed.connect(on_failure)
+        worker.finished.connect(worker.deleteLater)
+        self._op_worker = worker
+        worker.start()
+
+    def _finish_op(self) -> None:
+        self._op_worker = None
+
+    def _set_button_state(self, text: str, accent: bool, enabled: bool) -> None:
+        self._connect_btn.setText(text)
+        self._connect_btn.setEnabled(enabled)
+        self._connect_btn.setProperty("accent", accent)
+        self._connect_btn.style().unpolish(self._connect_btn)  # type: ignore[union-attr]
+        self._connect_btn.style().polish(self._connect_btn)    # type: ignore[union-attr]
 
     def _restore_settings(self) -> None:
         s = self._settings
@@ -240,8 +313,17 @@ class ConnectionPanel(QWidget):
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
+        # Finish any in-flight connect/disconnect, then tear down synchronously:
+        # at shutdown there is no event loop left to run a worker's callbacks.
+        with contextlib.suppress(RuntimeError):
+            if self._op_worker is not None and self._op_worker.isRunning():
+                self._op_worker.wait(5000)
         if self._backend is not None and self._backend.is_connected():
-            self._disconnect()
+            backend = self._backend
+            self._backend = None
+            with contextlib.suppress(Exception):
+                backend.disconnect()
+            self.backend_disconnected.emit()
         super().closeEvent(event)  # type: ignore[misc]
 
 

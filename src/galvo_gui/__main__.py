@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import sys
 from pathlib import Path
@@ -24,10 +25,8 @@ def _load_app_icon() -> QIcon:
 def _set_windows_app_id() -> None:
     if sys.platform != "win32":
         return
-    try:
+    with contextlib.suppress(AttributeError, OSError):
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_WINDOWS_APP_ID)
-    except (AttributeError, OSError):
-        pass
 
 
 def _configure_application(app: QApplication) -> None:

@@ -102,6 +102,81 @@ def test_connection_panel_shows_canon_fields_only_for_canon_backend(qapp: object
     assert not panel._cal_edit.isVisible()
 
 
+def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out waiting for GUI state"
+        qapp.processEvents()
+        time.sleep(0.01)
+
+
+def test_connect_and_disconnect_run_off_the_gui_thread(qapp) -> None:
+    """A slow backend.connect must not freeze the panel: the button switches to
+    a progress label immediately and the connection completes via the worker."""
+    import time
+
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    original_connect = MockGalvoBackend.connect
+
+    def slow_connect(self, host=""):
+        time.sleep(0.2)
+        original_connect(self, host)
+
+    MockGalvoBackend.connect = slow_connect
+    try:
+        panel = ConnectionPanel()
+        panel._backend_combo.setCurrentIndex(0)
+        panel._on_connect_toggle()
+
+        # Immediately after the click the GUI is free and shows progress.
+        assert panel._connect_btn.text() == "Connecting…"
+        assert not panel._connect_btn.isEnabled()
+        assert panel._backend is None
+
+        _process_until(qapp, lambda: panel._backend is not None)
+        assert panel._connect_btn.text() == "Disconnect"
+        assert panel._connect_btn.isEnabled()
+        assert not panel._backend_combo.isEnabled()
+    finally:
+        MockGalvoBackend.connect = original_connect
+
+    panel._on_connect_toggle()
+    assert panel._connect_btn.text() == "Disconnecting…"
+    assert panel._backend is None  # detached before hardware teardown
+
+    _process_until(qapp, lambda: panel._connect_btn.text() == "Connect")
+    assert panel._connect_btn.isEnabled()
+    assert panel._backend_combo.isEnabled()
+
+
+def test_connect_failure_reenables_the_panel(qapp) -> None:
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    original_connect = MockGalvoBackend.connect
+
+    def failing_connect(self, host=""):
+        raise RuntimeError("server unreachable")
+
+    MockGalvoBackend.connect = failing_connect
+    try:
+        panel = ConnectionPanel()
+        panel._backend_combo.setCurrentIndex(0)
+        panel._on_connect_toggle()
+        _process_until(qapp, lambda: panel._connect_btn.text() == "Connect")
+    finally:
+        MockGalvoBackend.connect = original_connect
+
+    assert panel._backend is None
+    assert panel._connect_btn.isEnabled()
+    assert panel._backend_combo.isEnabled()
+    assert "Connection failed: server unreachable" in panel._log.toPlainText()
+
+
 def test_connection_panel_persists_canon_settings(qapp: object) -> None:
     from galvo_gui.gui.panel_manual import ConnectionPanel
 

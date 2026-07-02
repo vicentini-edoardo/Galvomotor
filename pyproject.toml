@@ -41,6 +41,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["UP006", "UP007", "UP035", "SIM108"]
 
 [tool.mypy]
-python_version = "3.8"
+# No python_version pin: current mypy releases reject 3.8 as a target, so
+# each CI job type-checks against its own interpreter version instead.
 ignore_missing_imports = true
 files = ["src/galvo_gui/motion", "src/galvo_gui/io", "src/galvo_gui/workers"]
