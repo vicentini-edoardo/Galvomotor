@@ -73,7 +73,7 @@ class MockGalvoBackend(GalvoBackend):
         self._require_connected()
         if (x_nm is None) != (y_nm is None):
             raise ValueError("x_nm and y_nm must be provided together.")
-        if x_nm is None:
+        if x_nm is None or y_nm is None:
             self._home_x_nm = self._x_nm
             self._home_y_nm = self._y_nm
         else:

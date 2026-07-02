@@ -315,9 +315,11 @@ def test_connection_panel_persists_canon_settings(qapp: object) -> None:
     assert restored._program_file_edit.text() == r"C:\Canon\gb511_core0.hex"
 
 
-def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(qapp, monkeypatch) -> None:
-    from galvo_gui.gui.panel_manual import ConnectionPanel
+def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(
+    qapp, monkeypatch
+) -> None:
     import galvo_gui.motion.canon.backend as canon_backend_module
+    from galvo_gui.gui.panel_manual import ConnectionPanel
 
     captured = {}
 
@@ -368,8 +370,8 @@ def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(qapp, 
 
 
 def test_connection_panel_does_not_force_invalid_canon_board_index(qapp, monkeypatch) -> None:
-    from galvo_gui.gui.panel_manual import ConnectionPanel
     import galvo_gui.motion.canon.backend as canon_backend_module
+    from galvo_gui.gui.panel_manual import ConnectionPanel
 
     captured = {}
 

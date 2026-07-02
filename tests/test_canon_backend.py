@@ -30,10 +30,11 @@ class FakeRS232:
 
     def home(self, axis: int) -> None:
         self.calls.append(("home", axis))
+        self._status[axis] = True  # homing completes instantly in the fake
 
     def read_status(self, axis: int):
         self.calls.append(("read_status", axis))
-        return type("Status", (), {"sync": self._status[axis]})()
+        return type("Status", (), {"sync": self._status[axis], "origining": False})()
 
     def switch_high_speed(self, axis: int) -> None:
         self.calls.append(("switch_high_speed", axis))
@@ -143,7 +144,9 @@ def test_failed_connect_unwinds_rs232_and_nea_session(monkeypatch) -> None:
     backend = _make_backend(monkeypatch, rs)
     teardown = []
 
-    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: teardown.append(("nea", host)))
+    monkeypatch.setattr(
+        backend, "_connect_nea_session", lambda host: teardown.append(("nea", host))
+    )
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: teardown.append(("galvo", None)))
     monkeypatch.setattr(
         backend,
@@ -212,3 +215,77 @@ def test_canon_connect_reports_stage_progress(monkeypatch) -> None:
         "Canon: Validating hardware read-back...",
         "Canon: Connection complete.",
     ]
+
+
+def test_connect_waits_for_homing_to_finish_before_high_speed(monkeypatch) -> None:
+    """home() only starts origin detection: switching the driver to high-speed
+    mode while it is still origining leaves it not following the GB511 (dead
+    read-back after a reconnect). The switch must wait for sync."""
+
+    class SlowHomingRS232(FakeRS232):
+        def __init__(self, polls_needed: int) -> None:
+            super().__init__()
+            self._polls_needed = polls_needed
+            self._homing_axis: int | None = None
+
+        def home(self, axis: int) -> None:
+            self.calls.append(("home", axis))
+            self._homing_axis = axis  # stays unsynced until polled enough
+
+        def read_status(self, axis: int):
+            self.calls.append(("read_status", axis))
+            if axis == self._homing_axis:
+                self._polls_needed -= 1
+                if self._polls_needed <= 0:
+                    self._status[axis] = True
+            return type(
+                "Status",
+                (),
+                {"sync": self._status[axis], "origining": not self._status[axis]},
+            )()
+
+    import galvo_gui.motion.canon.backend as canon_backend_module
+
+    monkeypatch.setattr(canon_backend_module.time, "sleep", lambda _s: None)
+
+    rs = SlowHomingRS232(polls_needed=3)
+    rs._status[2] = False
+    backend = _make_backend(monkeypatch, rs)
+    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
+    monkeypatch.setattr(backend, "_complete_connect", lambda: setattr(backend, "_connected", True))
+
+    backend.connect("nea-host")
+
+    polls_for_axis_2 = [c for c in rs.calls if c == ("read_status", 2)]
+    assert len(polls_for_axis_2) >= 3  # waited through the homing
+    last_poll_index = len(rs.calls) - 1 - rs.calls[::-1].index(("read_status", 2))
+    assert last_poll_index < rs.calls.index(("switch_high_speed", 1))
+    assert backend.is_connected() is True
+
+
+def test_connect_fails_and_unwinds_when_homing_never_syncs(monkeypatch) -> None:
+    from galvo_gui.motion.base import GalvoError
+
+    class NeverSyncRS232(FakeRS232):
+        def home(self, axis: int) -> None:
+            self.calls.append(("home", axis))  # sync is never reached
+
+    import galvo_gui.motion.canon.backend as canon_backend_module
+
+    monkeypatch.setattr(canon_backend_module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(canon_backend_module, "_HOMING_TIMEOUT_S", 0.0)
+
+    rs = NeverSyncRS232()
+    rs._status[1] = False
+    backend = _make_backend(monkeypatch, rs)
+    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
+
+    with pytest.raises(GalvoError, match="did not report sync"):
+        backend.connect("nea-host")
+
+    # Failed connect unwinds: axes back to RS-232 mode, servos off.
+    assert ("switch_rs232", 1) in rs.calls
+    assert ("servo_off", 1) in rs.calls
+    assert backend.is_connected() is False
