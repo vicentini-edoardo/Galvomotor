@@ -107,6 +107,29 @@ QLabel#ReadoutLabel {{
     border-radius: 6px;
     border: 1px solid {BORDER};
 }}
+QLabel#ReadoutLabel[motionReadout="true"] {{
+    font-size: 15pt;
+    font-weight: 700;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: {TEXT};
+}}
+QLabel#ReadoutLabel[homeReadout="true"] {{
+    font-size: 11pt;
+    font-weight: 600;
+    color: {TEXT_MUTED};
+}}
+QLabel#MotionClusterTitle {{
+    color: {TEXT};
+    font-size: 10pt;
+    font-weight: 700;
+}}
+QLabel#MotionInlineLabel, QLabel#MotionReadoutCaption {{
+    color: {TEXT_MUTED};
+    font-size: 9pt;
+    font-weight: 600;
+}}
 QStatusBar QLabel {{
     color: {TEXT_MUTED};
     font-size: 9pt;
@@ -155,6 +178,11 @@ QPushButton[accent="true"] {{
     color: {ACCENT};
     border-color: {ACCENT};
     font-weight: 600;
+}}
+QWidget#MotionCluster {{
+    background-color: {SURFACE_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
 }}
 
 /* Input widgets */

@@ -25,6 +25,8 @@ class CanonGalvoBackend(GalvoBackend):
         self._program_file = program_file
         self._serial_port = serial_port
         self._connected = False
+        self._home_x_nm = 0.0
+        self._home_y_nm = 0.0
 
     def connect(self, host: str = "") -> None:
         opened_motion = False
@@ -82,14 +84,33 @@ class CanonGalvoBackend(GalvoBackend):
     def read_xy_nm(self) -> tuple[float, float]:
         self._require_connected()
         x_bits, y_bits = self._motion.read_current_xy_bits()
-        return (x_bits * self._bit_scale_nm, y_bits * self._bit_scale_nm)
+        return (
+            (x_bits * self._bit_scale_nm) - self._home_x_nm,
+            (y_bits * self._bit_scale_nm) - self._home_y_nm,
+        )
 
     def read_z_nm(self) -> float:
         return 0.0
 
+    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> tuple[float, float]:
+        self._require_connected()
+        if (x_nm is None) != (y_nm is None):
+            raise ValueError("x_nm and y_nm must be provided together.")
+        if x_nm is None:
+            x_bits, y_bits = self._motion.read_current_xy_bits()
+            self._home_x_nm = x_bits * self._bit_scale_nm
+            self._home_y_nm = y_bits * self._bit_scale_nm
+        else:
+            self._home_x_nm = float(x_nm)
+            self._home_y_nm = float(y_nm)
+        return (self._home_x_nm, self._home_y_nm)
+
     def goto_center(self) -> None:
         self._require_connected()
-        self._motion.update_positions(0, 0)
+        self._motion.update_positions(
+            int(round(self._home_x_nm / self._bit_scale_nm)),
+            int(round(self._home_y_nm / self._bit_scale_nm)),
+        )
 
     def available_xy_steps_nm(self) -> tuple[float, ...]:
         return STANDARD_STEP_OPTIONS_NM

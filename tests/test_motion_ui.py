@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from galvo_gui.gui.main_window import MainWindow
 from galvo_gui.gui.panel_manual import MotionPanel
@@ -33,11 +33,14 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
 
     assert not panel._xy_step_combo.isEditable()
     assert not panel._z_step_combo.isEditable()
+    assert any(label.text() == "Galvomotor XY" for label in panel.findChildren(QLabel))
+    assert any(label.text() == "neaSNOM Z" for label in panel.findChildren(QLabel))
     assert [panel._xy_step_combo.itemText(i) for i in range(panel._xy_step_combo.count())] == [
         "0.1",
-        "1",
-        "10",
+        "50",
         "100",
+        "500",
+        "1000",
     ]
     assert [panel._z_step_combo.itemText(i) for i in range(panel._z_step_combo.count())] == [
         "10",
@@ -47,6 +50,7 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     ]
     assert panel._btn_z_up.text() == "▲"
     assert panel._btn_z_down.text() == "▼"
+    assert panel._btn_set_home.text() == "Set Home"
     assert not panel._xy_step_combo.isEnabled()
     assert not panel._z_step_combo.isEnabled()
 
@@ -75,17 +79,45 @@ def test_motion_panel_locks_and_unlocks_with_backend(qapp: object) -> None:
     assert panel._btn_z_up.isEnabled()
 
 
-def test_motion_panel_persists_selected_steps(qapp: object) -> None:
+def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
+    from galvo_gui.motion.mock import MockGalvoBackend
+
     panel = MotionPanel()
     panel._settings.clear()
-    panel._xy_step_combo.setCurrentText("10")
+    panel._xy_step_combo.setCurrentText("50")
     panel._z_step_combo.setCurrentText("10000")
+    backend = MockGalvoBackend()
+    backend.connect()
+    backend.move_relative(250.0, -125.0)
+    panel.set_backend(backend)
+    panel._set_home()
     panel.save_settings()
 
     restored = MotionPanel()
 
-    assert restored._xy_step_combo.currentText() == "10"
+    assert restored._xy_step_combo.currentText() == "50"
     assert restored._z_step_combo.currentText() == "10000"
+    assert restored._home_x_nm == 250.0
+    assert restored._home_y_nm == -125.0
+    assert restored._home_label.text() == "250, -125"
+
+
+def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
+    panel = MotionPanel()
+    panel._settings.clear()
+    panel._home_x_nm = 300.0
+    panel._home_y_nm = -200.0
+    panel.save_settings()
+
+    restored = MotionPanel()
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    backend = MockGalvoBackend()
+    backend.connect()
+    backend.move_relative(300.0, -200.0)
+    restored.set_backend(backend)
+
+    assert backend.read_xy_nm() == (0.0, 0.0)
 
 
 def test_connection_panel_shows_canon_fields_only_for_canon_backend(qapp: object) -> None:

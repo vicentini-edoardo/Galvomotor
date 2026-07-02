@@ -46,6 +46,8 @@ class FakeRS232:
 class FakeMotion:
     def __init__(self) -> None:
         self.calls = []
+        self.current = (123, -456)
+        self.target = (123, -456)
 
     def initialize(self, board_index: int = 0, program_file=None) -> None:
         self.calls.append(("initialize", board_index, program_file))
@@ -61,14 +63,16 @@ class FakeMotion:
 
     def read_current_xy_bits(self):
         self.calls.append(("read_current_xy_bits",))
-        return (123, -456)
+        return self.current
 
     def read_target_xy_bits(self):
         self.calls.append(("read_target_xy_bits",))
-        return (123, -456)
+        return self.target
 
     def update_positions(self, x_bits: int, y_bits: int) -> None:
         self.calls.append(("update_positions", x_bits, y_bits))
+        self.current = (x_bits, y_bits)
+        self.target = (x_bits, y_bits)
 
 
 def test_connect_runs_canon_startup_sequence_in_order() -> None:
@@ -156,3 +160,19 @@ def test_scan_is_rejected_for_canon_backend() -> None:
 
     with pytest.raises(GalvoError, match="scan imaging is disabled"):
         backend.scan(1.0, 1.0, 1, 1, 0.0, 0.0, lambda *_: None, lambda: False)
+
+
+def test_set_home_redefines_origin_and_goto_center() -> None:
+    motion = FakeMotion()
+    backend = CanonGalvoBackend(rs232=FakeRS232(), motion=motion, bit_scale_nm=2.0)
+    backend._connected = True
+
+    assert backend.set_home() == (246.0, -912.0)
+    assert backend.read_xy_nm() == (0.0, 0.0)
+
+    motion.current = (140, -400)
+    motion.target = (140, -400)
+    assert backend.read_xy_nm() == (34.0, 112.0)
+
+    backend.goto_center()
+    assert motion.calls[-1] == ("update_positions", 123, -456)

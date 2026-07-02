@@ -52,6 +52,10 @@ class _FakeGalvo:
     X0 = 400.0  # home, nm
     Y0 = -250.0
 
+    @staticmethod
+    def Bit2Pos(bits: int) -> float:
+        return bits / _FakeGalvo.K
+
 
 def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:
     """move_relative must replicate the working notebook's galvo_move: absolute
@@ -124,6 +128,23 @@ def test_goto_center_converts_home_to_goto_units() -> None:
     ]
 
 
+def test_set_home_redefines_origin_and_goto_center() -> None:
+    wrapper = _FakeWrapper()
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo()
+    backend._gb511_wrap = wrapper
+
+    assert backend.set_home() == (
+        pytest.approx((1000 / 1.79) - 400.0),
+        pytest.approx((2000 / 1.79) - (-250.0)),
+    )
+    assert backend.read_xy_nm() == (pytest.approx(0.0), pytest.approx(0.0))
+
+    backend.goto_center()
+    assert wrapper.goto_calls[-1] == (int(_CX * 1000), int(_CX * 2000))
+
+
 def test_available_xy_steps_require_a_full_goto_unit() -> None:
     """Steps below the goto-unit resolution (~5 nm at K=1.79) are unusable."""
 
@@ -131,11 +152,11 @@ def test_available_xy_steps_require_a_full_goto_unit() -> None:
     backend._connected = True
     backend._galvo = _FakeGalvo()
 
-    assert backend.available_xy_steps_nm() == (10.0, 100.0)
+    assert backend.available_xy_steps_nm() == (50.0, 100.0, 500.0, 1000.0)
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:
-    assert galvo_nea._available_xy_steps_nm(1.79) == (1.0, 10.0, 100.0)
+    assert galvo_nea._available_xy_steps_nm(1.79) == (50.0, 100.0, 500.0, 1000.0)
 
 
 def test_read_gb511_bits_passes_byref_to_raw_dll_handles(monkeypatch) -> None:

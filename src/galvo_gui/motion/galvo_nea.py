@@ -85,6 +85,8 @@ class GalvoNeaBackend(GalvoBackend):
         self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
         self._z0_nm: float = 0.0
         self._z_nm: float = 0.0
+        self._home_x_nm: float = 0.0
+        self._home_y_nm: float = 0.0
 
     # ------------------------------------------------------------------
     # Connection
@@ -183,23 +185,34 @@ class GalvoNeaBackend(GalvoBackend):
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
         self._require_connected()
-        xb, yb = self._read_gb511_bits()
-        x_nm = self._galvo.Bit2Pos(xb) - self._galvo.X0
-        y_nm = self._galvo.Bit2Pos(yb) - self._galvo.Y0
-        return (float(x_nm), float(y_nm))
+        x_nm, y_nm = self._read_xy_nm_relative_to_startup_home()
+        home_x_nm, home_y_nm = self._current_home_xy_nm()
+        return (x_nm - home_x_nm, y_nm - home_y_nm)
 
     def read_z_nm(self) -> float:
         self._require_connected()
         return self._z_nm
 
+    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
+        self._require_connected()
+        if (x_nm is None) != (y_nm is None):
+            raise ValueError("x_nm and y_nm must be provided together.")
+        if x_nm is None:
+            self._home_x_nm, self._home_y_nm = self._read_xy_nm_relative_to_startup_home()
+        else:
+            self._home_x_nm = float(x_nm)
+            self._home_y_nm = float(y_nm)
+        return (self._home_x_nm, self._home_y_nm)
+
     def goto_center(self) -> None:
-        """Move galvo back to the calibrated home position."""
+        """Move galvo back to the active home position."""
         self._require_connected()
         # Not Galvo.GoHome: it feeds read-unit pulses straight into
         # ctr_goto_xy without the goto-unit conversion (see _GOTO_PER_READ_X).
+        home_x_nm, home_y_nm = self._current_home_xy_nm()
         self._goto_read_units(
-            self._galvo.K * self._galvo.X0,
-            self._galvo.K * self._galvo.Y0,
+            self._galvo.K * (self._galvo.X0 + home_x_nm),
+            self._galvo.K * (self._galvo.Y0 + home_y_nm),
         )
 
     def available_xy_steps_nm(self) -> tuple[float, ...]:
@@ -322,6 +335,15 @@ class GalvoNeaBackend(GalvoBackend):
             args = (x_bit, y_bit)
         self._call_gb511("ctr_get_current_xy_pos", *args)
         return (int(x_bit.value), int(y_bit.value))
+
+    def _read_xy_nm_relative_to_startup_home(self) -> Tuple[float, float]:
+        xb, yb = self._read_gb511_bits()
+        x_nm = self._galvo.Bit2Pos(xb) - self._galvo.X0
+        y_nm = self._galvo.Bit2Pos(yb) - self._galvo.Y0
+        return (float(x_nm), float(y_nm))
+
+    def _current_home_xy_nm(self) -> Tuple[float, float]:
+        return (float(getattr(self, "_home_x_nm", 0.0)), float(getattr(self, "_home_y_nm", 0.0)))
 
     def _goto_read_units(
         self,

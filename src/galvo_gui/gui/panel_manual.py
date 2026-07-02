@@ -6,7 +6,7 @@ import contextlib
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import QSettings, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QSettings, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -338,6 +338,8 @@ class MotionPanel(QWidget):
         self._locked = False
         self._last_position_error: str | None = None
         self._settings = QSettings("galvo_gui", "MotionPanel")
+        self._home_x_nm = 0.0
+        self._home_y_nm = 0.0
         self._build_ui()
         self._restore_settings()
 
@@ -351,23 +353,44 @@ class MotionPanel(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(8)
         root.addWidget(self._build_motion_group())
-        root.addWidget(self._build_position_group())
         root.addStretch()
 
     def _build_motion_group(self) -> QGroupBox:
         grp = QGroupBox("Motion")
         vbox = QVBoxLayout(grp)
+        vbox.setSpacing(12)
 
-        step_row = QHBoxLayout()
-        step_row.addWidget(QLabel("XY step (nm):"))
+        split = QHBoxLayout()
+        split.setSpacing(12)
+        split.addWidget(self._build_xy_cluster(), 3)
+        split.addWidget(self._build_z_cluster(), 2)
+        vbox.addLayout(split)
+        return grp
+
+    def _build_xy_cluster(self) -> QWidget:
+        cluster = QWidget()
+        cluster.setObjectName("MotionCluster")
+        cluster.setProperty("clusterRole", "xy")
+
+        outer = QVBoxLayout(cluster)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("Galvomotor XY")
+        title.setObjectName("MotionClusterTitle")
+        header.addWidget(title)
+        header.addStretch()
+        step_label = QLabel("Step (nm)")
+        step_label.setObjectName("MotionInlineLabel")
+        header.addWidget(step_label)
         self._xy_step_combo = self._build_step_combo(STANDARD_STEP_OPTIONS_NM, "100")
-        step_row.addWidget(self._xy_step_combo)
-        step_row.addSpacing(12)
-        step_row.addWidget(QLabel("Z step (nm):"))
-        self._z_step_combo = self._build_step_combo(Z_STEP_OPTIONS_NM, "1000")
-        step_row.addWidget(self._z_step_combo)
-        step_row.addStretch()
-        vbox.addLayout(step_row)
+        header.addWidget(self._xy_step_combo)
+        outer.addLayout(header)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
 
         grid = QGridLayout()
         grid.setSpacing(4)
@@ -377,8 +400,6 @@ class MotionPanel(QWidget):
         self._btn_left = QPushButton("◀")
         self._btn_right = QPushButton("▶")
         self._btn_center = QPushButton("⊙")
-        self._btn_z_up = QPushButton("▲")
-        self._btn_z_down = QPushButton("▼")
 
         for btn in (
             self._btn_up,
@@ -386,49 +407,93 @@ class MotionPanel(QWidget):
             self._btn_left,
             self._btn_right,
             self._btn_center,
-            self._btn_z_up,
-            self._btn_z_down,
         ):
-            btn.setFixedSize(48, 36)
+            btn.setFixedSize(52, 40)
 
         grid.addWidget(self._btn_up, 0, 1)
         grid.addWidget(self._btn_left, 1, 0)
         grid.addWidget(self._btn_center, 1, 1)
         grid.addWidget(self._btn_right, 1, 2)
         grid.addWidget(self._btn_down, 2, 1)
-        grid.addWidget(QLabel("Z"), 1, 3)
-        grid.addWidget(self._btn_z_up, 0, 4)
-        grid.addWidget(self._btn_z_down, 2, 4)
 
         self._btn_up.clicked.connect(lambda: self._jog_xy(0, 1))
         self._btn_down.clicked.connect(lambda: self._jog_xy(0, -1))
         self._btn_left.clicked.connect(lambda: self._jog_xy(-1, 0))
         self._btn_right.clicked.connect(lambda: self._jog_xy(1, 0))
         self._btn_center.clicked.connect(self._goto_center)
+
+        pad = QWidget()
+        pad.setLayout(grid)
+        body.addWidget(pad)
+
+        self._x_label = self._build_motion_readout("--")
+        self._y_label = self._build_motion_readout("--")
+        self._home_label = self._build_motion_readout("0, 0", home=True)
+        self._btn_set_home = QPushButton("Set Home")
+        self._btn_set_home.clicked.connect(self._set_home)
+
+        readouts = QVBoxLayout()
+        readouts.setSpacing(8)
+        readouts.addWidget(self._build_readout_column("X live", self._x_label))
+        readouts.addWidget(self._build_readout_column("Y live", self._y_label))
+        readouts.addSpacing(2)
+        readouts.addWidget(self._build_readout_column("Home", self._home_label))
+        readouts.addWidget(self._btn_set_home, alignment=Qt.AlignmentFlag.AlignLeft)
+        readouts.addStretch()
+        body.addLayout(readouts, 1)
+
+        outer.addLayout(body)
+        return cluster
+
+    def _build_z_cluster(self) -> QWidget:
+        cluster = QWidget()
+        cluster.setObjectName("MotionCluster")
+        cluster.setProperty("clusterRole", "z")
+
+        outer = QVBoxLayout(cluster)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("neaSNOM Z")
+        title.setObjectName("MotionClusterTitle")
+        header.addWidget(title)
+        header.addStretch()
+        step_label = QLabel("Step (nm)")
+        step_label.setObjectName("MotionInlineLabel")
+        header.addWidget(step_label)
+        self._z_step_combo = self._build_step_combo(Z_STEP_OPTIONS_NM, "1000")
+        header.addWidget(self._z_step_combo)
+        outer.addLayout(header)
+
+        self._btn_z_up = QPushButton("▲")
+        self._btn_z_down = QPushButton("▼")
+        for btn in (self._btn_z_up, self._btn_z_down):
+            btn.setFixedSize(52, 40)
+
         self._btn_z_up.clicked.connect(lambda: self._jog_z(1))
         self._btn_z_down.clicked.connect(lambda: self._jog_z(-1))
 
-        cross_widget = QWidget()
-        cross_widget.setLayout(grid)
-        vbox.addWidget(cross_widget)
-        return grp
+        body = QHBoxLayout()
+        body.setSpacing(16)
 
-    def _build_position_group(self) -> QGroupBox:
-        grp = QGroupBox("Position")
-        grid = QGridLayout(grp)
+        z_buttons = QVBoxLayout()
+        z_buttons.setSpacing(6)
+        z_buttons.addWidget(self._btn_z_up)
+        z_buttons.addWidget(self._btn_z_down)
+        z_buttons.addStretch()
+        body.addLayout(z_buttons)
 
-        grid.addWidget(QLabel("X (nm):"), 0, 0)
-        self._x_label = ReadoutLabel("--")
-        grid.addWidget(self._x_label, 0, 1)
+        self._z_label = self._build_motion_readout("--")
+        z_readout = QVBoxLayout()
+        z_readout.setSpacing(8)
+        z_readout.addWidget(self._build_readout_column("Z live", self._z_label))
+        z_readout.addStretch()
+        body.addLayout(z_readout, 1)
 
-        grid.addWidget(QLabel("Y (nm):"), 1, 0)
-        self._y_label = ReadoutLabel("--")
-        grid.addWidget(self._y_label, 1, 1)
-
-        grid.addWidget(QLabel("Z (nm):"), 2, 0)
-        self._z_label = ReadoutLabel("--")
-        grid.addWidget(self._z_label, 2, 1)
-        return grp
+        outer.addLayout(body)
+        return cluster
 
     def _build_step_combo(self, options: tuple[float, ...], default: str) -> QComboBox:
         combo = QComboBox()
@@ -437,8 +502,32 @@ class MotionPanel(QWidget):
         combo.setCurrentText(default)
         return combo
 
+    def _build_motion_readout(self, text: str, *, home: bool = False) -> ReadoutLabel:
+        label = ReadoutLabel(text)
+        label.setProperty("motionReadout", True)
+        if home:
+            label.setProperty("homeReadout", True)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return label
+
+    def _build_readout_column(self, title: str, value_label: ReadoutLabel) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        caption = QLabel(title)
+        caption.setObjectName("MotionReadoutCaption")
+        layout.addWidget(caption)
+        layout.addWidget(value_label)
+        return widget
+
     def set_backend(self, backend: GalvoBackend) -> None:
         self._backend = backend
+        try:
+            self._backend.set_home(self._home_x_nm, self._home_y_nm)
+        except Exception as exc:  # noqa: BLE001
+            self.log_message.emit(f"Home restore error: {exc}")
         self._apply_step_availability()
         self._refresh_position()
         if not self._locked:
@@ -480,6 +569,20 @@ class MotionPanel(QWidget):
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Center error: {exc}")
+
+    def _set_home(self) -> None:
+        if self._backend is None:
+            return
+        try:
+            self._home_x_nm, self._home_y_nm = self._backend.set_home()
+            self._update_home_label()
+            self.save_settings()
+            self._refresh_position()
+            self.log_message.emit(
+                f"Home set to ({self._home_x_nm:.0f}, {self._home_y_nm:.0f}) nm"
+            )
+        except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
+            self.log_message.emit(f"Set home error: {exc}")
 
     def _refresh_position(self) -> None:
         if self._backend is None or not self._backend.is_connected():
@@ -557,6 +660,7 @@ class MotionPanel(QWidget):
             self._btn_left,
             self._btn_right,
             self._btn_center,
+            self._btn_set_home,
         ):
             btn.setEnabled(enable_xy)
         for btn in (self._btn_z_up, self._btn_z_down):
@@ -571,10 +675,20 @@ class MotionPanel(QWidget):
             self._xy_step_combo.setCurrentText(xy_step)
         if isinstance(z_step, str):
             self._z_step_combo.setCurrentText(z_step)
+        with contextlib.suppress(Exception):
+            self._home_x_nm = float(self._settings.value("home_x_nm", 0.0))
+        with contextlib.suppress(Exception):
+            self._home_y_nm = float(self._settings.value("home_y_nm", 0.0))
+        self._update_home_label()
 
     def save_settings(self) -> None:
         self._settings.setValue("xy_step_nm", self._xy_step_combo.currentText())
         self._settings.setValue("z_step_nm", self._z_step_combo.currentText())
+        self._settings.setValue("home_x_nm", self._home_x_nm)
+        self._settings.setValue("home_y_nm", self._home_y_nm)
+
+    def _update_home_label(self) -> None:
+        self._home_label.setText(f"{self._home_x_nm:.0f}, {self._home_y_nm:.0f}")
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()

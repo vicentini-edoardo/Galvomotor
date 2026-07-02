@@ -9,7 +9,7 @@ from typing import Callable, Tuple
 import numpy as np
 
 _N_HARMONICS = 6
-STANDARD_STEP_OPTIONS_NM = (0.1, 1.0, 10.0, 100.0)
+STANDARD_STEP_OPTIONS_NM = (0.1, 50.0, 100.0, 500.0, 1000.0)
 # The parabolic-mirror Z axis needs far coarser jogs than the galvo: the lab
 # notebooks step it in ~1000 nm increments, and sub-100 nm requests are within
 # the positioner's deadband.
@@ -33,8 +33,8 @@ class GalvoBackend(ABC):
     """Abstract interface for galvo motor motion and neaSNOM signal readout.
 
     All move calls are **relative** (nm) from the current position.
-    The galvo origin (0, 0) is the center position established at startup
-    or by the last ``goto_center`` / ``set_center`` call.
+    The galvo origin (0, 0) is the active home/center position established
+    at startup or by the last ``set_home`` call.
     """
 
     @abstractmethod
@@ -74,8 +74,19 @@ class GalvoBackend(ABC):
         ...
 
     @abstractmethod
+    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
+        """Set the galvo home/center used by ``read_xy_nm`` and ``goto_center``.
+
+        When *x_nm* and *y_nm* are omitted, the backend must capture the
+        current physical XY position as the new home.  When provided, the
+        coordinates are absolute nm in the backend's startup reference frame,
+        so a persisted home can be restored on a later session.
+        """
+        ...
+
+    @abstractmethod
     def goto_center(self) -> None:
-        """Move galvo back to the center (0, 0) position."""
+        """Move galvo back to the active home/center position."""
         ...
 
     @abstractmethod

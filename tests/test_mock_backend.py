@@ -40,6 +40,21 @@ def test_goto_center_resets() -> None:
     assert abs(z) < 1e-9
 
 
+def test_set_home_redefines_origin_and_goto_center() -> None:
+    b = MockGalvoBackend()
+    b.connect()
+    b.move_relative(1000.0, -500.0)
+
+    assert b.set_home() == (1000.0, -500.0)
+    assert b.read_xy_nm() == (0.0, 0.0)
+
+    b.move_relative(25.0, -75.0)
+    assert b.read_xy_nm() == (25.0, -75.0)
+
+    b.goto_center()
+    assert b.read_xy_nm() == (0.0, 0.0)
+
+
 def test_read_sample_shape() -> None:
     b = MockGalvoBackend()
     b.connect()
@@ -79,7 +94,7 @@ def test_z_motion_and_available_steps() -> None:
     b = MockGalvoBackend()
     b.connect()
 
-    assert b.available_xy_steps_nm() == (0.1, 1.0, 10.0, 100.0)
+    assert b.available_xy_steps_nm() == (0.1, 50.0, 100.0, 500.0, 1000.0)
     assert b.available_z_steps_nm() == (10.0, 100.0, 1000.0, 10000.0)
 
     b.move_z_relative(10.0)

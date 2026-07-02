@@ -31,6 +31,8 @@ class MockGalvoBackend(GalvoBackend):
         self._x_nm: float = 0.0
         self._y_nm: float = 0.0
         self._z_nm: float = 0.0
+        self._home_x_nm: float = 0.0
+        self._home_y_nm: float = 0.0
         self._rng = np.random.default_rng(seed)
 
     # ------------------------------------------------------------------
@@ -61,16 +63,28 @@ class MockGalvoBackend(GalvoBackend):
 
     def read_xy_nm(self) -> Tuple[float, float]:
         self._require_connected()
-        return (self._x_nm, self._y_nm)
+        return (self._x_nm - self._home_x_nm, self._y_nm - self._home_y_nm)
 
     def read_z_nm(self) -> float:
         self._require_connected()
         return self._z_nm
 
+    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
+        self._require_connected()
+        if (x_nm is None) != (y_nm is None):
+            raise ValueError("x_nm and y_nm must be provided together.")
+        if x_nm is None:
+            self._home_x_nm = self._x_nm
+            self._home_y_nm = self._y_nm
+        else:
+            self._home_x_nm = float(x_nm)
+            self._home_y_nm = float(y_nm)
+        return (self._home_x_nm, self._home_y_nm)
+
     def goto_center(self) -> None:
         self._require_connected()
-        self._x_nm = 0.0
-        self._y_nm = 0.0
+        self._x_nm = self._home_x_nm
+        self._y_nm = self._home_y_nm
         self._z_nm = 0.0
 
     def available_xy_steps_nm(self) -> tuple[float, ...]:
