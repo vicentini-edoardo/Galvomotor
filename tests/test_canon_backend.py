@@ -181,3 +181,34 @@ def test_failed_connect_unwinds_rs232_and_nea_session(monkeypatch) -> None:
         ("disconnect",),
     ]
     assert backend.is_connected() is False
+
+
+def test_canon_connect_reports_stage_progress(monkeypatch) -> None:
+    rs = FakeRS232()
+    backend = _make_backend(monkeypatch, rs)
+    messages: list[str] = []
+    backend.set_status_callback(messages.append)
+
+    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
+    monkeypatch.setattr(backend, "_complete_connect", lambda: setattr(backend, "_connected", True))
+
+    backend.connect("nea-host")
+
+    assert messages == [
+        "Canon: Starting connection to nea-host.",
+        "Canon: Opening neaSNOM session...",
+        "Canon: neaSNOM session ready.",
+        "Canon: Opening galvo hardware...",
+        "Canon: Galvo hardware ready.",
+        "Canon: Opening Canon RS-232 link...",
+        "Canon: Canon RS-232 link ready.",
+        "Canon: Preparing Canon axes for high-speed mode...",
+        "Canon: Clearing Canon axis errors...",
+        "Canon: Enabling Canon servos...",
+        "Canon: Checking Canon axis sync state...",
+        "Canon: Switching Canon axes to high-speed mode...",
+        "Canon: Canon axes ready in high-speed mode.",
+        "Canon: Validating hardware read-back...",
+        "Canon: Connection complete.",
+    ]

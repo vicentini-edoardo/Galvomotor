@@ -312,3 +312,26 @@ def test_disconnect_awaits_nea_tools_on_backend_loop(monkeypatch) -> None:
     assert awaited["loop_closed"] is True
     assert backend._connected is False
     assert backend._loop is None
+
+
+def test_real_connect_reports_stage_progress(monkeypatch) -> None:
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    messages: list[str] = []
+    backend._status_callback = messages.append
+    backend._backend_label = "Real"
+
+    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
+    monkeypatch.setattr(backend, "_complete_connect", lambda: None)
+
+    backend.connect("nea-host")
+
+    assert messages == [
+        "Real: Starting connection to nea-host.",
+        "Real: Opening neaSNOM session...",
+        "Real: neaSNOM session ready.",
+        "Real: Opening galvo hardware...",
+        "Real: Galvo hardware ready.",
+        "Real: Validating hardware read-back...",
+        "Real: Connection complete.",
+    ]

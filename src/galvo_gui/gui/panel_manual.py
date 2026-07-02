@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -70,6 +71,7 @@ class ConnectionPanel(QWidget):
     backend_connected = pyqtSignal(object)   # GalvoBackend
     backend_disconnected = pyqtSignal()
     log_message = pyqtSignal(str)
+    backend_progress = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,6 +84,7 @@ class ConnectionPanel(QWidget):
         self._pending_backend: GalvoBackend | None = None
         self._pending_name = ""
         self._settings = QSettings("galvo_gui", "ManualPanel")
+        self.backend_progress.connect(self._append_backend_progress)
         self._build_ui()
         self._restore_settings()
 
@@ -232,6 +235,8 @@ class ConnectionPanel(QWidget):
             self._pending_name = "Real" if index == 1 else "Canon"
 
         connect_target = self._host_edit.text().strip() or "nea-server"
+        if hasattr(backend, "set_status_callback"):
+            backend.set_status_callback(self.backend_progress.emit)
         self._pending_backend = backend
         self._set_button_state("Connecting…", accent=True, enabled=False)
         self._backend_combo.setEnabled(False)
@@ -344,6 +349,13 @@ class ConnectionPanel(QWidget):
         self._op_failure_callback = None
         if callback is not None:
             callback(message)
+
+    @pyqtSlot(str)
+    def _append_backend_progress(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {message}"
+        self._log.append_line(line)
+        self.log_message.emit(message)
 
     def _set_button_state(self, text: str, accent: bool, enabled: bool) -> None:
         self._connect_btn.setText(text)

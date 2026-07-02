@@ -87,6 +87,8 @@ class GalvoNeaBackend(GalvoBackend):
         self._z_nm: float = 0.0
         self._home_x_nm: float = 0.0
         self._home_y_nm: float = 0.0
+        self._status_callback: Callable[[str], None] | None = None
+        self._backend_label = "Real"
 
     # ------------------------------------------------------------------
     # Connection
@@ -94,12 +96,20 @@ class GalvoNeaBackend(GalvoBackend):
 
     def connect(self, host: str = "nea-server") -> None:
         """Connect to neaSNOM server and initialise galvo hardware."""
+        self._report_status(f"Starting connection to {host}.")
+        self._report_status("Opening neaSNOM session...")
         self._connect_nea_session(host)
+        self._report_status("neaSNOM session ready.")
+        self._report_status("Opening galvo hardware...")
         self._open_galvo_hardware()
+        self._report_status("Galvo hardware ready.")
+        self._report_status("Validating hardware read-back...")
         self._complete_connect()
+        self._report_status("Connection complete.")
 
     def disconnect(self) -> None:
         should_disconnect_session = self._connected or self._loop is not None
+        self._report_status("Starting disconnect.")
         # ponytail: keep galvo_functions open — no close_galvo() in notebooks
         self._connected = False
         self._gb511_wrap = None
@@ -108,9 +118,21 @@ class GalvoNeaBackend(GalvoBackend):
         self._context = None
         if should_disconnect_session:
             self._disconnect_nea_session()
+        self._report_status("Disconnect complete.")
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def set_status_callback(self, callback: Callable[[str], None] | None) -> None:
+        self._status_callback = callback
+
+    def _report_status(self, message: str) -> None:
+        callback = getattr(self, "_status_callback", None)
+        if callback is None:
+            return
+        backend_label = getattr(self, "_backend_label", type(self).__name__)
+        with contextlib.suppress(Exception):
+            callback(f"{backend_label}: {message}")
 
     def _connect_nea_session(self, host: str) -> None:
         # Always create a fresh event loop for each nea_tools session.
@@ -130,6 +152,7 @@ class GalvoNeaBackend(GalvoBackend):
         self._context = neaspec.context
         self._stream_module = stream
         self._mirror_cls = Mirror
+        self._report_status("neaSNOM SDK objects loaded.")
 
     def _open_galvo_hardware(self) -> None:
         # Initialise galvo hardware (independent of neaSNOM connection).
@@ -161,17 +184,21 @@ class GalvoNeaBackend(GalvoBackend):
         with _working_directory(_CONFIG_DIR):
             self._gb511_wrap, _status = _open_galvo(**open_kwargs)
         self._galvo = _GalvoHW(self._cal_path)
+        self._report_status("Galvo board handle opened.")
 
     def _complete_connect(self) -> None:
         # Fail loudly now if the board rejects position reads, instead of
         # connecting into a dead board that silently ignores every move.
         self._read_gb511_bits()
+        self._report_status("GB511 position read-back OK.")
         self._z0_nm = self._read_absolute_mirror_z_nm()
         self._z_nm = 0.0
         self._connected = True
+        self._report_status("Mirror Z reference captured.")
 
     def _disconnect_nea_session(self) -> None:
         loop = self._loop
+        self._report_status("Closing neaSNOM session...")
         try:
             if loop is not None and not loop.is_closed():
                 with contextlib.suppress(Exception):
@@ -185,6 +212,7 @@ class GalvoNeaBackend(GalvoBackend):
                         asyncio.run(disconnect_result)
         finally:
             self._close_backend_loop()
+            self._report_status("neaSNOM session closed.")
 
     def _close_backend_loop(self) -> None:
         loop = self._loop
