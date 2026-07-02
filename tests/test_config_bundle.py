@@ -20,86 +20,118 @@ def test_config_bundle_paths_point_to_repo_root() -> None:
     assert galvo_nea._DEFAULT_CORRECTION_FILE == "GM-2020-ftheta-10mm-fo4.tsc"
 
 
-class _FakeWrapper:
-    """Raw-DLL stand-in whose bit positions only vendor Move may change."""
+_CX = 0.11080  # goto units per read pulse, from the notebook's galvo_move
 
-    def __init__(self) -> None:
+
+class _FakeWrapper:
+    """GB511 stand-in with the board's two coordinate spaces: reads report
+    fine pulses, ctr_goto_xy takes coarse goto units (ratio _CX)."""
+
+    def __init__(self, drop_moves: bool = False) -> None:
         self._x_bit = 1000
         self._y_bit = 2000
+        self.goto_calls: list[tuple[int, int]] = []
+        self._drop_moves = drop_moves
 
     def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
         x.value = self._x_bit  # type: ignore[attr-defined]
         y.value = self._y_bit  # type: ignore[attr-defined]
 
+    def ctr_goto_xy(self, gx: int, gy: int) -> None:
+        self.goto_calls.append((gx, gy))
+        if self._drop_moves:
+            return  # axis railed at its limit: command has no effect
+        self._x_bit = round(gx / _CX)
+        self._y_bit = round(gy / _CX)
+
 
 class _FakeGalvo:
-    """Vendor galvo_functions.Galvo stand-in: Move(dx, dy, wrap) is relative."""
+    """galvo_functions.Galvo stand-in: only calibration values are used."""
 
-    K = 1.79
-
-    def __init__(self, drop_moves: bool = False) -> None:
-        self.move_calls: list[tuple[float, float, object]] = []
-        self._drop_moves = drop_moves
-
-    def Move(self, dx_nm: float, dy_nm: float, wrap: object) -> None:  # noqa: N802
-        self.move_calls.append((dx_nm, dy_nm, wrap))
-        if self._drop_moves:
-            return  # Xmax guard: silently ignores the request
-        wrap._x_bit += round(self.K * dx_nm)  # type: ignore[attr-defined]
-        wrap._y_bit += round(self.K * dy_nm)  # type: ignore[attr-defined]
+    K = 1.79  # read pulses per nm
+    X0 = 400.0  # home, nm
+    Y0 = -250.0
 
 
-def test_move_relative_delegates_to_vendor_move(monkeypatch) -> None:
-    """move_relative must go through galvo_functions.Galvo.Move: driving the raw
-    DLL's ctr_goto_xy with a guessed prototype mis-routed the axis arguments
-    (both X and Y jogs moved the same mirror with inconsistent step sizes)."""
+def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:
+    """move_relative must replicate the working notebook's galvo_move: absolute
+    target = current read pulses + K*delta, commanded as int(CX * target).
+    Vendor Galvo.Move skips the CX conversion (targets ~9x out of range) and is
+    absolute-from-home, so repeated jogs would not accumulate."""
 
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
     wrapper = _FakeWrapper()
-    galvo = _FakeGalvo()
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
-    backend._galvo = galvo
+    backend._galvo = _FakeGalvo()
     backend._gb511_wrap = wrapper
 
     backend.move_relative(100.0, -50.0)
-    backend.move_relative(100.0, 0.0)
 
-    assert galvo.move_calls == [
-        (100.0, -50.0, wrapper),
-        (100.0, 0.0, wrapper),
+    assert wrapper.goto_calls == [
+        (int(_CX * (1000 + 1.79 * 100.0)), int(_CX * (2000 + 1.79 * -50.0))),
     ]
-    assert (wrapper._x_bit, wrapper._y_bit) == (
-        1000 + 2 * round(1.79 * 100.0),
-        2000 + round(1.79 * -50.0),
+
+    # Second jog accumulates from the new position instead of re-homing.
+    x_bit, y_bit = wrapper._x_bit, wrapper._y_bit
+    backend.move_relative(100.0, 0.0)
+    assert wrapper.goto_calls[-1] == (
+        int(_CX * (x_bit + 1.79 * 100.0)),
+        int(_CX * (y_bit + 1.79 * 0.0)),
     )
 
 
-def test_move_relative_raises_when_vendor_move_silently_drops(monkeypatch) -> None:
-    """Galvo.Move's Xmax guard drops moves without an error; the backend must
-    detect the missing motion via read-back and raise instead of no-oping."""
+def test_move_relative_raises_when_axis_does_not_follow(monkeypatch) -> None:
+    """A railed/ignored axis must surface as an error via read-back, not no-op."""
 
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
-    backend._galvo = _FakeGalvo(drop_moves=True)
-    backend._gb511_wrap = _FakeWrapper()
+    backend._galvo = _FakeGalvo()
+    backend._gb511_wrap = _FakeWrapper(drop_moves=True)
 
     with pytest.raises(GalvoError, match="produced no motion"):
         backend.move_relative(100.0, 0.0)
 
 
-def test_move_relative_skips_readback_for_sub_bit_moves(monkeypatch) -> None:
-    """A requested step below 1 bit cannot be verified by read-back and must
-    not be reported as a dropped move."""
+def test_move_relative_skips_readback_below_goto_resolution(monkeypatch) -> None:
+    """A step that quantises onto the current goto-unit target cannot be
+    verified by read-back and must not be reported as a dropped move."""
 
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
     backend._connected = True
-    backend._galvo = _FakeGalvo(drop_moves=True)
-    backend._gb511_wrap = _FakeWrapper()
+    backend._galvo = _FakeGalvo()
+    backend._gb511_wrap = _FakeWrapper(drop_moves=True)
 
-    backend.move_relative(0.1, 0.0)  # 0.179 bits — rounds to zero
+    backend.move_relative(0.1, 0.0)  # 0.179 read pulses ≈ 0.02 goto units
+
+
+def test_goto_center_converts_home_to_goto_units() -> None:
+    """goto_center must not use Galvo.GoHome (no CX conversion): home is
+    K*X0 read pulses, commanded as int(CX * K * X0) goto units."""
+
+    wrapper = _FakeWrapper()
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo()
+    backend._gb511_wrap = wrapper
+
+    backend.goto_center()
+
+    assert wrapper.goto_calls == [
+        (int(_CX * 1.79 * 400.0), int(_CX * 1.79 * -250.0)),
+    ]
+
+
+def test_available_xy_steps_require_a_full_goto_unit() -> None:
+    """Steps below the goto-unit resolution (~5 nm at K=1.79) are unusable."""
+
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo()
+
+    assert backend.available_xy_steps_nm() == (10.0, 100.0)
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:
