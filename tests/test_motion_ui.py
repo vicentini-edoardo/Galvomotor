@@ -185,6 +185,93 @@ def test_connect_and_disconnect_run_off_the_gui_thread(qapp) -> None:
     assert panel._backend_combo.isEnabled()
 
 
+def test_reconnect_after_disconnect_completes_on_the_same_worker_thread(qapp, monkeypatch) -> None:
+    """Regression: after a disconnect the worker thread was torn down, so the
+    next connect ran on a fresh thread. The thread-affine neaSNOM SDK then
+    hung until the app was restarted. Connect, disconnect, and reconnect must
+    all run on one persistent worker thread."""
+    import threading
+
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    op_thread_idents: list[int] = []
+    original_connect = MockGalvoBackend.connect
+    original_disconnect = MockGalvoBackend.disconnect
+
+    def recording_connect(self, host=""):
+        op_thread_idents.append(threading.get_ident())
+        original_connect(self, host)
+
+    def recording_disconnect(self):
+        op_thread_idents.append(threading.get_ident())
+        original_disconnect(self)
+
+    monkeypatch.setattr(MockGalvoBackend, "connect", recording_connect)
+    monkeypatch.setattr(MockGalvoBackend, "disconnect", recording_disconnect)
+
+    panel = ConnectionPanel()
+    panel._backend_combo.setCurrentIndex(0)
+
+    panel._on_connect_toggle()  # first connect
+    _process_until(qapp, lambda: panel._backend is not None)
+    first_thread = panel._op_thread
+    assert first_thread is not None and first_thread.isRunning()
+
+    panel._on_connect_toggle()  # disconnect
+    _process_until(
+        qapp,
+        lambda: panel._connect_btn.text() == "Connect" and panel._connect_btn.isEnabled(),
+    )
+    assert panel._op_thread is first_thread  # thread survives the disconnect
+
+    panel._on_connect_toggle()  # reconnect — this used to hang on hardware
+    _process_until(qapp, lambda: panel._backend is not None)
+
+    assert panel._backend.is_connected()
+    assert panel._connect_btn.text() == "Disconnect"
+    assert panel._op_thread is first_thread
+    assert op_thread_idents and len(set(op_thread_idents)) == 1
+    assert op_thread_idents[0] != threading.get_ident()  # and off the GUI thread
+
+    panel.close()
+
+
+def test_close_while_connected_disconnects_on_the_worker_thread(qapp) -> None:
+    """Closing the app with a live session must tear it down from the op
+    thread (SDK thread-affinity), not from the GUI thread, and must stop the
+    worker thread so the process can exit cleanly."""
+    import threading
+
+    from galvo_gui.gui.panel_manual import ConnectionPanel
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    disconnect_idents: list[int] = []
+    original_disconnect = MockGalvoBackend.disconnect
+
+    def recording_disconnect(self):
+        disconnect_idents.append(threading.get_ident())
+        original_disconnect(self)
+
+    MockGalvoBackend.disconnect = recording_disconnect
+    try:
+        panel = ConnectionPanel()
+        panel._backend_combo.setCurrentIndex(0)
+        panel._on_connect_toggle()
+        _process_until(qapp, lambda: panel._backend is not None)
+        backend = panel._backend
+        op_thread = panel._op_thread
+
+        panel.close()
+    finally:
+        MockGalvoBackend.disconnect = original_disconnect
+
+    assert not backend.is_connected()
+    assert disconnect_idents and disconnect_idents[0] != threading.get_ident()
+    assert panel._op_thread is None
+    assert not op_thread.isRunning()
+
+
 def test_connect_failure_reenables_the_panel(qapp) -> None:
     from galvo_gui.gui.panel_manual import ConnectionPanel
     from galvo_gui.motion.mock import MockGalvoBackend
