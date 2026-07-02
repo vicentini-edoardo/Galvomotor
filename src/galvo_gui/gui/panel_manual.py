@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QSettings, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QMetaObject, QObject, pyqtSlot
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -30,24 +31,33 @@ from galvo_gui.motion.base import (
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 
 
-class _BackendOpWorker(QThread):
-    """Run a blocking backend operation (connect/disconnect) off the GUI thread.
+class _BackendOpRunner(QObject):
+    """Execute blocking backend lifecycle operations on one dedicated thread.
 
-    nea_tools.connect/disconnect and DLL/serial initialisation can block for
-    many seconds (or hang on a dead server); on the GUI thread that freezes
-    the whole window at the connection/disconnection stage.
+    The neaSNOM SDK is sensitive to thread-affinity during connect/disconnect.
+    Reusing a single thread for the whole backend session avoids reconnect
+    hangs caused by tearing down the session from a different QThread.
     """
 
     succeeded = pyqtSignal()
     failed = pyqtSignal(str)
 
-    def __init__(self, op: Callable[[], None], parent: QWidget | None = None) -> None:
-        super().__init__(parent)  # type: ignore[arg-type]
+    def __init__(self) -> None:
+        super().__init__()
+        self._op: Callable[[], None] | None = None
+
+    def set_op(self, op: Callable[[], None]) -> None:
         self._op = op
 
-    def run(self) -> None:
+    @pyqtSlot()
+    def run_current_op(self) -> None:
+        op = self._op
+        self._op = None
+        if op is None:
+            self.failed.emit("Internal error: no backend operation scheduled.")
+            return
         try:
-            self._op()
+            op()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.failed.emit(str(exc))
         else:
@@ -64,7 +74,9 @@ class ConnectionPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._backend: GalvoBackend | None = None
-        self._op_worker: _BackendOpWorker | None = None
+        self._op_thread: QThread | None = None
+        self._op_runner: _BackendOpRunner | None = None
+        self._op_busy = False
         self._pending_backend: GalvoBackend | None = None
         self._pending_name = ""
         self._settings = QSettings("galvo_gui", "ManualPanel")
@@ -158,7 +170,7 @@ class ConnectionPanel(QWidget):
             self._cal_edit.setText(path)
 
     def _on_connect_toggle(self) -> None:
-        if self._op_worker is not None and self._op_worker.isRunning():
+        if self._op_busy:
             return  # connect/disconnect already in flight
         if self._backend is not None and self._backend.is_connected():
             self._disconnect()
@@ -225,7 +237,7 @@ class ConnectionPanel(QWidget):
                        self._on_connect_failed)
 
     def _on_connect_succeeded(self) -> None:
-        self._finish_op()
+        self._finish_op(keep_thread=True)
         self._backend = self._pending_backend
         self._pending_backend = None
         self._set_button_state("Disconnect", accent=False, enabled=True)
@@ -272,16 +284,61 @@ class ConnectionPanel(QWidget):
         on_success: Callable[[], None],
         on_failure: Callable[[str], None],
     ) -> None:
-        worker = _BackendOpWorker(op, self)
-        # Bound-method slots run queued on the GUI thread, never in the worker.
-        worker.succeeded.connect(on_success)
-        worker.failed.connect(on_failure)
-        worker.finished.connect(worker.deleteLater)
-        self._op_worker = worker
-        worker.start()
+        self._ensure_op_thread()
+        runner = self._op_runner
+        if runner is None:
+            on_failure("Internal error: backend worker unavailable.")
+            return
 
-    def _finish_op(self) -> None:
-        self._op_worker = None
+        def cleanup_callbacks() -> None:
+            with contextlib.suppress(TypeError):
+                runner.succeeded.disconnect(handle_success)
+            with contextlib.suppress(TypeError):
+                runner.failed.disconnect(handle_failure)
+
+        def handle_success() -> None:
+            cleanup_callbacks()
+            on_success()
+
+        def handle_failure(message: str) -> None:
+            cleanup_callbacks()
+            on_failure(message)
+
+        self._op_busy = True
+        runner.succeeded.connect(handle_success)
+        runner.failed.connect(handle_failure)
+        runner.set_op(op)
+        QMetaObject.invokeMethod(
+            runner,
+            "run_current_op",
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    def _finish_op(self, *, keep_thread: bool = False) -> None:
+        self._op_busy = False
+        if not keep_thread:
+            self._teardown_op_thread()
+
+    def _ensure_op_thread(self) -> None:
+        if self._op_thread is not None and self._op_runner is not None:
+            return
+        thread = QThread(self)
+        runner = _BackendOpRunner()
+        runner.moveToThread(thread)
+        thread.finished.connect(runner.deleteLater)
+        thread.start()
+        self._op_thread = thread
+        self._op_runner = runner
+
+    def _teardown_op_thread(self) -> None:
+        thread = self._op_thread
+        self._op_thread = None
+        self._op_runner = None
+        if thread is None:
+            return
+        thread.quit()
+        with contextlib.suppress(RuntimeError):
+            thread.wait(5000)
 
     def _set_button_state(self, text: str, accent: bool, enabled: bool) -> None:
         self._connect_btn.setText(text)
@@ -324,14 +381,15 @@ class ConnectionPanel(QWidget):
         # Finish any in-flight connect/disconnect, then tear down synchronously:
         # at shutdown there is no event loop left to run a worker's callbacks.
         with contextlib.suppress(RuntimeError):
-            if self._op_worker is not None and self._op_worker.isRunning():
-                self._op_worker.wait(5000)
+            if self._op_busy and self._op_thread is not None:
+                self._op_thread.wait(5000)
         if self._backend is not None and self._backend.is_connected():
             backend = self._backend
             self._backend = None
             with contextlib.suppress(Exception):
                 backend.disconnect()
             self.backend_disconnected.emit()
+        self._teardown_op_thread()
         super().closeEvent(event)  # type: ignore[misc]
 
 
