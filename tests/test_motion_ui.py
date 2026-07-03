@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication, QLabel
 
 from galvo_gui.gui.main_window import MainWindow
@@ -16,6 +17,12 @@ from galvo_gui.gui.panel_manual import MotionPanel
 def qapp():  # type: ignore[no-untyped-def]
     app = QApplication.instance() or QApplication([])
     return app
+
+
+@pytest.fixture(autouse=True)
+def _clear_qsettings() -> None:
+    QSettings("galvo_gui", "MotionPanel").clear()
+    QSettings("galvo_gui", "ManualPanel").clear()
 
 
 def test_main_window_has_connection_motion_and_scan_tabs(qapp: object) -> None:
@@ -125,6 +132,37 @@ def test_motion_panel_home_fields_apply_manual_values(qapp: object) -> None:
     restored = MotionPanel()
     assert restored._home_x_edit.text() == "100"
     assert restored._home_y_edit.text() == "-50"
+
+
+def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -> None:
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    panel = MotionPanel()
+    panel._settings.clear()
+    backend = MockGalvoBackend()
+    backend.connect()
+    backend.move_relative(300.0, -200.0)
+    panel.set_backend(backend)
+
+    panel._home_x_edit.setText("100")
+    panel._home_y_edit.setText("-50")
+    panel._home_x_edit.editingFinished.emit()
+    qapp.processEvents()
+
+    panel._set_origin()
+
+    assert panel._origin_x_nm == 300.0
+    assert panel._origin_y_nm == -200.0
+    assert panel._home_x_nm == -200.0
+    assert panel._home_y_nm == 150.0
+    assert panel._x_label.text() == "0"
+    assert panel._y_label.text() == "0"
+
+    panel._goto_center()
+
+    assert backend.read_xy_nm() == (0.0, 0.0)
+    assert panel._x_label.text() == "-200"
+    assert panel._y_label.text() == "150"
 
 
 def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:

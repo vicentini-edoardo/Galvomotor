@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMetaObject, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QDoubleValidator
+from PyQt6.QtGui import QAction, QDoubleValidator
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -17,7 +17,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -449,6 +451,8 @@ class MotionPanel(QWidget):
         self._settings = QSettings("galvo_gui", "MotionPanel")
         self._home_x_nm = 0.0
         self._home_y_nm = 0.0
+        self._origin_x_nm = 0.0
+        self._origin_y_nm = 0.0
         self._build_ui()
         self._restore_settings()
 
@@ -496,6 +500,8 @@ class MotionPanel(QWidget):
         header.addWidget(step_label)
         self._xy_step_combo = self._build_step_combo(STANDARD_STEP_OPTIONS_NM, "100")
         header.addWidget(self._xy_step_combo)
+        self._menu_button = self._build_motion_menu_button()
+        header.addWidget(self._menu_button)
         outer.addLayout(header)
 
         body = QHBoxLayout()
@@ -654,10 +660,36 @@ class MotionPanel(QWidget):
         layout.addWidget(value_label)
         return widget
 
+    def _build_motion_menu_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setText("...")
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(button)
+        self._set_origin_action = QAction("Set Origin", button)
+        self._set_origin_action.triggered.connect(self._set_origin)
+        menu.addAction(self._set_origin_action)
+        button.setMenu(menu)
+        return button
+
+    def _backend_home_xy_nm(self) -> tuple[float, float]:
+        return (self._origin_x_nm + self._home_x_nm, self._origin_y_nm + self._home_y_nm)
+
+    def _current_xy_from_origin_nm(self) -> tuple[float, float]:
+        if self._backend is None:
+            return (self._home_x_nm, self._home_y_nm)
+        x_rel_home_nm, y_rel_home_nm = self._backend.read_xy_nm()
+        return (x_rel_home_nm + self._home_x_nm, y_rel_home_nm + self._home_y_nm)
+
+    def _apply_backend_home(self) -> None:
+        if self._backend is None:
+            return
+        backend_home_x_nm, backend_home_y_nm = self._backend_home_xy_nm()
+        self._backend.set_home(backend_home_x_nm, backend_home_y_nm)
+
     def set_backend(self, backend: GalvoBackend) -> None:
         self._backend = backend
         try:
-            self._backend.set_home(self._home_x_nm, self._home_y_nm)
+            self._apply_backend_home()
         except Exception as exc:  # noqa: BLE001
             self.log_message.emit(f"Home restore error: {exc}")
         self._apply_step_availability()
@@ -706,7 +738,8 @@ class MotionPanel(QWidget):
         if self._backend is None:
             return
         try:
-            self._home_x_nm, self._home_y_nm = self._backend.set_home()
+            self._home_x_nm, self._home_y_nm = self._current_xy_from_origin_nm()
+            self._backend.set_home(*self._backend_home_xy_nm())
             self._update_home_label()
             self.save_settings()
             self._refresh_position()
@@ -716,11 +749,30 @@ class MotionPanel(QWidget):
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Set home error: {exc}")
 
+    def _set_origin(self) -> None:
+        if self._backend is None:
+            return
+        try:
+            current_x_nm, current_y_nm = self._current_xy_from_origin_nm()
+            self._origin_x_nm += current_x_nm
+            self._origin_y_nm += current_y_nm
+            self._home_x_nm -= current_x_nm
+            self._home_y_nm -= current_y_nm
+            self._apply_backend_home()
+            self._update_home_label()
+            self.save_settings()
+            self._refresh_position()
+            self.log_message.emit(
+                f"Origin set to ({self._origin_x_nm:.0f}, {self._origin_y_nm:.0f}) nm"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log_message.emit(f"Set origin error: {exc}")
+
     def _refresh_position(self) -> None:
         if self._backend is None or not self._backend.is_connected():
             return
         try:
-            x_nm, y_nm = self._backend.read_xy_nm()
+            x_nm, y_nm = self._current_xy_from_origin_nm()
             z_nm = self._backend.read_z_nm()
         except Exception as exc:  # noqa: BLE001
             # Report once per distinct failure instead of spamming the 500 ms
@@ -799,6 +851,7 @@ class MotionPanel(QWidget):
             btn.setEnabled(enable_z)
         self._xy_step_combo.setEnabled(enable_xy)
         self._z_step_combo.setEnabled(enable_z)
+        self._menu_button.setEnabled(enable_xy)
         home_edit_enabled = not self._locked
         self._home_x_edit.setEnabled(home_edit_enabled)
         self._home_y_edit.setEnabled(home_edit_enabled)
@@ -814,6 +867,10 @@ class MotionPanel(QWidget):
             self._home_x_nm = float(self._settings.value("home_x_nm", 0.0))
         with contextlib.suppress(Exception):
             self._home_y_nm = float(self._settings.value("home_y_nm", 0.0))
+        with contextlib.suppress(Exception):
+            self._origin_x_nm = float(self._settings.value("origin_x_nm", 0.0))
+        with contextlib.suppress(Exception):
+            self._origin_y_nm = float(self._settings.value("origin_y_nm", 0.0))
         self._update_home_label()
 
     def save_settings(self) -> None:
@@ -821,6 +878,8 @@ class MotionPanel(QWidget):
         self._settings.setValue("z_step_nm", self._z_step_combo.currentText())
         self._settings.setValue("home_x_nm", self._home_x_nm)
         self._settings.setValue("home_y_nm", self._home_y_nm)
+        self._settings.setValue("origin_x_nm", self._origin_x_nm)
+        self._settings.setValue("origin_y_nm", self._origin_y_nm)
 
     def _update_home_label(self) -> None:
         self._home_label.setText(f"{self._home_x_nm:.0f}, {self._home_y_nm:.0f}")
@@ -839,7 +898,7 @@ class MotionPanel(QWidget):
         self._home_y_nm = home_y_nm
         if self._backend is not None:
             try:
-                self._backend.set_home(self._home_x_nm, self._home_y_nm)
+                self._apply_backend_home()
             except Exception as exc:  # noqa: BLE001
                 self.log_message.emit(f"Set home error: {exc}")
                 self._update_home_label()
