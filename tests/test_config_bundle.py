@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +26,9 @@ _CX = 0.11080  # goto units per read pulse, from the notebook's galvo_move
 
 class _FakeWrapper:
     """GB511 stand-in with the board's two coordinate spaces: reads report
-    fine pulses, ctr_goto_xy takes coarse goto units (ratio _CX)."""
+    fine pulses, ctr_goto_xy takes coarse goto units (ratio _CX).  The read
+    pulse count quantises downward, the worst case for the read→goto
+    conversion (the encoder never reports a fraction of a pulse)."""
 
     def __init__(self, drop_moves: bool = False) -> None:
         self._x_bit = 1000
@@ -41,8 +44,8 @@ class _FakeWrapper:
         self.goto_calls.append((gx, gy))
         if self._drop_moves:
             return  # axis railed at its limit: command has no effect
-        self._x_bit = round(gx / _CX)
-        self._y_bit = round(gy / _CX)
+        self._x_bit = math.floor(gx / _CX)
+        self._y_bit = math.floor(gy / _CX)
 
 
 class _FakeGalvo:
@@ -59,7 +62,7 @@ class _FakeGalvo:
 
 def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:
     """move_relative must replicate the working notebook's galvo_move: absolute
-    target = current read pulses + K*delta, commanded as int(CX * target).
+    target = current read pulses + K*delta, commanded as round(CX * target).
     Vendor Galvo.Move skips the CX conversion (targets ~9x out of range) and is
     absolute-from-home, so repeated jogs would not accumulate."""
 
@@ -73,16 +76,63 @@ def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:
     backend.move_relative(100.0, -50.0)
 
     assert wrapper.goto_calls == [
-        (int(_CX * (1000 + 1.79 * 100.0)), int(_CX * (2000 + 1.79 * -50.0))),
+        (round(_CX * (1000 + 1.79 * 100.0)), round(_CX * (2000 + 1.79 * -50.0))),
     ]
 
     # Second jog accumulates from the new position instead of re-homing.
     x_bit, y_bit = wrapper._x_bit, wrapper._y_bit
     backend.move_relative(100.0, 0.0)
     assert wrapper.goto_calls[-1] == (
-        int(_CX * (x_bit + 1.79 * 100.0)),
-        int(_CX * (y_bit + 1.79 * 0.0)),
+        round(_CX * (x_bit + 1.79 * 100.0)),
+        round(_CX * (y_bit + 1.79 * 0.0)),
     )
+
+
+def test_single_axis_jogs_do_not_disturb_the_other_axis(monkeypatch) -> None:
+    """Regression: the read→goto conversion used int() truncation, and since
+    ctr_goto_xy commands both axes, every X jog re-derived the Y target one
+    goto unit low about half the time (int(CX * round(g / CX)) == g - 1).
+    On hardware this showed up as X and Y motion being mixed together, with
+    the parked axis creeping on every jog of the other one."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    wrapper = _FakeWrapper()
+    wrapper.ctr_goto_xy(111, 222)  # park at a position the board can report
+    wrapper.goto_calls.clear()
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo()
+    backend._gb511_wrap = wrapper
+
+    y_bit_start = wrapper._y_bit
+    for _ in range(10):
+        backend.move_relative(100.0, 0.0)
+    assert wrapper._y_bit == y_bit_start
+    assert {gy for _gx, gy in wrapper.goto_calls} == {222}
+
+
+def test_back_and_forth_jogs_return_to_the_same_position(monkeypatch) -> None:
+    """Regression: int() truncation biased every commanded target downward, so
+    a +step/-step pair lost one goto unit (~9 read pulses) per round trip and
+    the galvo could not be walked back and forth across the same positions."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    wrapper = _FakeWrapper()
+    wrapper.ctr_goto_xy(111, 222)  # park at a position the board can report
+    wrapper.goto_calls.clear()
+    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend._connected = True
+    backend._galvo = _FakeGalvo()
+    backend._gb511_wrap = wrapper
+
+    x_bit_start = wrapper._x_bit
+    backend.move_relative(500.0, 0.0)
+    x_bit_forward = wrapper._x_bit
+    for _ in range(5):
+        backend.move_relative(-500.0, 0.0)
+        assert wrapper._x_bit == x_bit_start
+        backend.move_relative(500.0, 0.0)
+        assert wrapper._x_bit == x_bit_forward
 
 
 def test_move_relative_raises_when_axis_does_not_follow(monkeypatch) -> None:
@@ -113,7 +163,7 @@ def test_move_relative_skips_readback_below_goto_resolution(monkeypatch) -> None
 
 def test_goto_center_converts_home_to_goto_units() -> None:
     """goto_center must not use Galvo.GoHome (no CX conversion): home is
-    K*X0 read pulses, commanded as int(CX * K * X0) goto units."""
+    K*X0 read pulses, commanded as round(CX * K * X0) goto units."""
 
     wrapper = _FakeWrapper()
     backend = object.__new__(galvo_nea.GalvoNeaBackend)
@@ -124,7 +174,7 @@ def test_goto_center_converts_home_to_goto_units() -> None:
     backend.goto_center()
 
     assert wrapper.goto_calls == [
-        (int(_CX * 1.79 * 400.0), int(_CX * 1.79 * -250.0)),
+        (round(_CX * 1.79 * 400.0), round(_CX * 1.79 * -250.0)),
     ]
 
 
@@ -142,7 +192,7 @@ def test_set_home_redefines_origin_and_goto_center() -> None:
     assert backend.read_xy_nm() == (pytest.approx(0.0), pytest.approx(0.0))
 
     backend.goto_center()
-    assert wrapper.goto_calls[-1] == (int(_CX * 1000), int(_CX * 2000))
+    assert wrapper.goto_calls[-1] == (round(_CX * 1000), round(_CX * 2000))
 
 
 def test_available_xy_steps_require_a_full_goto_unit() -> None:
