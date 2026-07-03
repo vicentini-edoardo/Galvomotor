@@ -138,6 +138,13 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
         self._home_x_nm: float = 0.0
         self._home_y_nm: float = 0.0
+        # Last goto units commanded per axis. ctr_goto_xy always commands both
+        # axes, so the axis a jog does not move is re-commanded to this stored
+        # value instead of a value re-quantised from the noisy read-back —
+        # otherwise encoder noise near a goto-unit boundary nudges the parked
+        # axis on every jog (X and Y appear coupled). None until first command.
+        self._cmd_gx: int | None = None
+        self._cmd_gy: int | None = None
         self._status_callback: Callable[[str], None] | None = None
         self._backend_label = "Galvo"
 
@@ -229,22 +236,40 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
         """Move galvo by (dx_nm, dy_nm) relative to current position.
 
-        Replicates the working notebook's scan() pattern exactly: read the
-        current position in read pulses, add the displacement (K [pulse/nm]
-        from the galvocal file), and command the absolute target through the
+        Replicates the working notebook's scan() pattern: read the current
+        position in read pulses, add the displacement (K [pulse/nm] from the
+        galvocal file), and command the absolute target through the
         galvo_move() unit conversion.  galvo_functions.Galvo.Move is not used:
         it is absolute-from-home (repeated jogs would not accumulate) and it
         skips the goto-unit conversion (targets land ~9x out of range).
+
+        ctr_goto_xy always commands both axes, so an axis with a zero request
+        is held at its last commanded goto unit (``_cmd_g*``).  Re-deriving it
+        from the read-back instead lets encoder noise flip it by a goto unit
+        (~9 read pulses) near a rounding boundary, which is why jogging one
+        axis appeared to move the other.
         """
         self._require_connected()
         xb_before, yb_before = self._read_gb511_bits()
-        moved = self._goto_read_units(
-            xb_before + self._galvo.K * dx_nm,
-            yb_before + self._galvo.K * dy_nm,
-            ref=(xb_before, yb_before),
-        )
-        if not moved:
-            return  # displacement below the goto-unit resolution
+        gx_cur = round(_GOTO_PER_READ_X * xb_before)
+        gy_cur = round(_GOTO_PER_READ_Y * yb_before)
+
+        if dx_nm:
+            gx_target = round(_GOTO_PER_READ_X * (xb_before + self._galvo.K * dx_nm))
+        else:
+            gx_target = self._parked_goto(getattr(self, "_cmd_gx", None), gx_cur)
+        if dy_nm:
+            gy_target = round(_GOTO_PER_READ_Y * (yb_before + self._galvo.K * dy_nm))
+        else:
+            gy_target = self._parked_goto(getattr(self, "_cmd_gy", None), gy_cur)
+
+        if (gx_target, gy_target) == (gx_cur, gy_cur):
+            # The requested move quantises onto the current position: no motion
+            # can be expected, but remember the (unchanged) command anyway.
+            self._cmd_gx, self._cmd_gy = gx_target, gy_target
+            return
+
+        self._command_goto(gx_target, gy_target)
         time.sleep(_MOVE_SETTLE_S)
         xb_after, yb_after = self._read_gb511_bits()
         if (xb_after, yb_after) == (xb_before, yb_before):
@@ -253,6 +278,12 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
                 f"stayed at ({xb_before}, {yb_before}) pulses. The axis may be at its "
                 "range limit — recenter with GoHome (⊙) and retry."
             )
+
+    @staticmethod
+    def _parked_goto(commanded: int | None, fallback: int) -> int:
+        """Goto units for an axis that is not moving: the last commanded value,
+        or the current read-back quantisation before any command was issued."""
+        return int(commanded) if commanded is not None else int(fallback)
 
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
@@ -344,11 +375,18 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         gx = round(_GOTO_PER_READ_X * x_read)
         gy = round(_GOTO_PER_READ_Y * y_read)
         xb_now, yb_now = ref if ref is not None else self._read_gb511_bits()
-        self._call_gb511("ctr_goto_xy", gx, gy)
+        self._command_goto(gx, gy)
         return (gx, gy) != (
             round(_GOTO_PER_READ_X * xb_now),
             round(_GOTO_PER_READ_Y * yb_now),
         )
+
+    def _command_goto(self, gx: int, gy: int) -> None:
+        """Command absolute goto units on both axes and remember them so a
+        later single-axis jog can hold the parked axis exactly here."""
+        self._call_gb511("ctr_goto_xy", int(gx), int(gy))
+        self._cmd_gx = int(gx)
+        self._cmd_gy = int(gy)
 
     def _call_gb511(self, name: str, *args: Any) -> Any:
         """Call a GB511 function, translating failures into GalvoError.

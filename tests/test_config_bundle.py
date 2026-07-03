@@ -144,6 +144,31 @@ def test_back_and_forth_jogs_return_to_the_same_position(monkeypatch) -> None:
         assert wrapper._x_bit == x_bit_forward
 
 
+def test_parked_axis_holds_commanded_goto_despite_readback_noise(monkeypatch) -> None:
+    """Regression: ctr_goto_xy commands both axes, so a single-axis jog must
+    hold the parked axis at its last commanded goto unit. Re-deriving it from
+    a noisy read-back (round(CX * bits)) lets encoder noise near a goto-unit
+    boundary flip it, which showed up as X and Y being coupled."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    wrapper = _FakeWrapper()
+    backend = _make_galvo(wrapper, _FakeGalvo())
+
+    backend.move_relative(0.0, 100.0)  # establish a Y command
+    cmd_gy = backend._cmd_gy
+
+    # Perturb the Y read-back by ~half a goto unit so a re-quantisation would
+    # round to a different goto unit than the one we actually commanded.
+    wrapper._y_bit += 6
+    assert round(_CX * wrapper._y_bit) != cmd_gy  # old code would have drifted
+
+    for _ in range(5):
+        backend.move_relative(100.0, 0.0)  # jog X only
+
+    # Every X jog re-commanded Y to the stored goto unit, never a re-quantised one.
+    assert {gy for _gx, gy in wrapper.goto_calls[1:]} == {cmd_gy}
+
+
 def test_move_relative_raises_when_axis_does_not_follow(monkeypatch) -> None:
     """A railed/ignored axis must surface as an error via read-back, not no-op."""
 
