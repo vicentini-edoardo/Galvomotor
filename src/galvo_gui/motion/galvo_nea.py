@@ -1,7 +1,19 @@
-"""Real galvo + neaSNOM backend using galvo_functions and nea_tools SDK."""
+"""Real galvo (galvo_functions/GB511) and neaSNOM (nea_tools) backends.
+
+These are two independent connections:
+
+* :class:`RealGalvoBackend` opens the galvomotor board and drives XY motion.
+* :class:`RealNeaBackend` opens the neaSNOM session and drives the parabolic
+  mirror Z axis plus optical signal readout.
+
+They share nothing at runtime beyond the process-global SDK session dictionaries
+(``_GB511_SHARED`` and ``_NEA_SESSION``), which pin their state to the process
+on first use and must be reused on reconnect.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ctypes
 import inspect
@@ -18,6 +30,7 @@ from galvo_gui.motion.base import (
     Z_STEP_OPTIONS_NM,
     GalvoBackend,
     GalvoError,
+    NeaBackend,
     SnomSample,
 )
 
@@ -30,15 +43,18 @@ if str(_CONFIG_DIR) not in sys.path:
     sys.path.insert(0, str(_CONFIG_DIR))
 
 try:
-    import asyncio
-
-    import nea_tools
-    import nest_asyncio
     from galvo_functions import Galvo as _GalvoHW  # noqa: F401
     from galvo_functions import open_galvo as _open_galvo  # noqa: F401
     GALVO_AVAILABLE = True
 except ImportError:
     GALVO_AVAILABLE = False
+
+try:
+    import nea_tools
+    import nest_asyncio
+    NEA_AVAILABLE = True
+except ImportError:
+    NEA_AVAILABLE = False
 
 _N_HARMONICS = 6
 # Give the galvo time to act on a move before the read-back that detects
@@ -83,73 +99,11 @@ _NEA_SESSION: dict[str, Any] = {
 }
 
 
-class GalvoNeaBackend(GalvoBackend):
-    """Real backend: galvo_functions Galvo + neaSNOM optical signal readout.
+class _StatusReporterMixin:
+    """Shared status-callback plumbing for the real backends."""
 
-    Requires:
-      - ``galvo_functions`` module on sys.path (lab PC)
-      - ``nea_tools`` + ``nest_asyncio`` installed (pip install -e ".[snom]")
-      - neaSNOM server reachable at *host*
-
-    Import-guarded: instantiation raises GalvoError if libs are missing.
-    """
-
-    def __init__(self, cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH)) -> None:
-        if not GALVO_AVAILABLE:
-            raise GalvoError(
-                "galvo_functions or nea_tools not available. "
-                "Ensure galvo_functions.py is on sys.path and run: "
-                "pip install nea_tools nest_asyncio"
-            )
-        self._cal_path = str(_resolve_repo_path(cal_files_path))
-        self._connected = False
-        # Duck-typed SDK/DLL handles (None until connect); Any keeps mypy out
-        # of vendor attribute lookups like Galvo.Move or stream.Stream.
-        self._loop: Any = None  # asyncio event loop
-        self._context: Any = None  # neaspec.context (post-connect)
-        self._stream_module: Any = None  # nea_tools.microscope.stream
-        self._mirror_cls: Any = None
-        self._galvo: Any = None  # galvo_functions.Galvo instance
-        self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
-        self._z0_nm: float = 0.0
-        self._z_nm: float = 0.0
-        self._home_x_nm: float = 0.0
-        self._home_y_nm: float = 0.0
-        self._status_callback: Callable[[str], None] | None = None
-        self._backend_label = "Real"
-
-    # ------------------------------------------------------------------
-    # Connection
-    # ------------------------------------------------------------------
-
-    def connect(self, host: str = "nea-server") -> None:
-        """Connect to neaSNOM server and initialise galvo hardware."""
-        self._report_status(f"Starting connection to {host}.")
-        self._report_status("Opening neaSNOM session...")
-        self._connect_nea_session(host)
-        self._report_status("neaSNOM session ready.")
-        self._report_status("Opening galvo hardware...")
-        self._open_galvo_hardware()
-        self._report_status("Galvo hardware ready.")
-        self._report_status("Validating hardware read-back...")
-        self._complete_connect()
-        self._report_status("Connection complete.")
-
-    def disconnect(self) -> None:
-        should_disconnect_session = self._connected or self._loop is not None
-        self._report_status("Starting disconnect.")
-        # ponytail: keep galvo_functions open — no close_galvo() in notebooks
-        self._connected = False
-        self._gb511_wrap = None
-        self._mirror_cls = None
-        self._stream_module = None
-        self._context = None
-        if should_disconnect_session:
-            self._disconnect_nea_session()
-        self._report_status("Disconnect complete.")
-
-    def is_connected(self) -> bool:
-        return self._connected
+    _status_callback: Callable[[str], None] | None = None
+    _backend_label = "Backend"
 
     def set_status_callback(self, callback: Callable[[str], None] | None) -> None:
         self._status_callback = callback
@@ -162,52 +116,57 @@ class GalvoNeaBackend(GalvoBackend):
         with contextlib.suppress(Exception):
             callback(f"{backend_label}: {message}")
 
-    def _connect_nea_session(self, host: str) -> None:
-        session = _NEA_SESSION
-        if session["connected"] and session["host"] == host:
-            # nea_tools cannot re-connect inside one process (see the note at
-            # the top of the module): adopt the live session instead.
-            self._adopt_nea_session()
-            self._report_status("Reusing live neaSNOM session.")
-            return
-        if session["connected"]:
-            self._report_status(
-                "Host changed; closing the previous neaSNOM session. If the "
-                "new connection hangs, restart the application."
-            )
-            self._shutdown_nea_session()
-        loop = session["loop"]
-        if loop is None or loop.is_closed():
-            loop = asyncio.new_event_loop()
-            nest_asyncio.apply(loop)
-            session["loop"] = loop
-        self._loop = loop
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(
-            nea_tools.connect(host, fingerprint=None, path_to_dll="")
-        )
-        # These imports only work after nea_tools.connect has loaded the SDK.
-        import neaspec  # noqa: PLC0415
-        from nea_tools.microscope import stream  # noqa: PLC0415
-        from nea_tools.microscope.motors import Mirror  # noqa: PLC0415
-        session["host"] = host
-        session["connected"] = True
-        session["context"] = neaspec.context
-        session["stream"] = stream
-        session["mirror_cls"] = Mirror
-        self._adopt_nea_session()
-        self._report_status("neaSNOM SDK objects loaded.")
 
-    def _adopt_nea_session(self) -> None:
-        self._loop = _NEA_SESSION["loop"]
-        with contextlib.suppress(Exception):
-            asyncio.set_event_loop(self._loop)
-        self._context = _NEA_SESSION["context"]
-        self._stream_module = _NEA_SESSION["stream"]
-        self._mirror_cls = _NEA_SESSION["mirror_cls"]
+class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
+    """Real galvomotor XY backend using galvo_functions + the GB511 board.
+
+    Requires ``galvo_functions`` on sys.path (lab PC).  Import-guarded:
+    instantiation raises GalvoError if the module is missing.
+    """
+
+    def __init__(self, cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH)) -> None:
+        if not GALVO_AVAILABLE:
+            raise GalvoError(
+                "galvo_functions not available. "
+                "Ensure galvo_functions.py is on sys.path."
+            )
+        self._cal_path = str(_resolve_repo_path(cal_files_path))
+        self._connected = False
+        # Duck-typed SDK/DLL handles (None until connect); Any keeps mypy out
+        # of vendor attribute lookups like Galvo.Move.
+        self._galvo: Any = None  # galvo_functions.Galvo instance
+        self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
+        self._home_x_nm: float = 0.0
+        self._home_y_nm: float = 0.0
+        self._status_callback: Callable[[str], None] | None = None
+        self._backend_label = "Galvo"
+
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
+
+    def connect(self, host: str = "") -> None:
+        """Initialise the galvomotor board and validate its read-back."""
+        self._report_status("Starting galvo connection.")
+        self._report_status("Opening galvo hardware...")
+        self._open_galvo_hardware()
+        self._report_status("Galvo hardware ready.")
+        self._report_status("Validating hardware read-back...")
+        self._validate_readback()
+        self._connected = True
+        self._report_status("Galvo connection complete.")
+
+    def disconnect(self) -> None:
+        self._report_status("Starting galvo disconnect.")
+        # ponytail: keep galvo_functions open — no close_galvo() in notebooks
+        self._connected = False
+        self._gb511_wrap = None
+        self._report_status("Galvo disconnect complete.")
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     def _open_galvo_hardware(self) -> None:
-        # Initialise galvo hardware (independent of neaSNOM connection).
         open_kwargs: dict[str, Any] = {"CalFn": _DEFAULT_CORRECTION_FILE}
         try:
             signature = inspect.signature(_open_galvo)
@@ -249,7 +208,7 @@ class GalvoNeaBackend(GalvoBackend):
             self._report_status("Galvo board handle opened.")
         self._galvo = _GalvoHW(self._cal_path)
 
-    def _complete_connect(self) -> None:
+    def _validate_readback(self) -> None:
         # Fail loudly now if the board rejects position reads, instead of
         # connecting into a dead board that silently ignores every move.
         x_bits, y_bits = self._read_gb511_bits()
@@ -262,45 +221,6 @@ class GalvoNeaBackend(GalvoBackend):
                 "control software). Fix the driver state and reconnect."
             )
         self._report_status("GB511 position read-back OK.")
-        self._z0_nm = self._read_absolute_mirror_z_nm()
-        self._z_nm = 0.0
-        self._connected = True
-        self._report_status("Mirror Z reference captured.")
-
-    def _disconnect_nea_session(self) -> None:
-        # Deliberately NOT nea_tools.disconnect(): the SDK cannot re-connect
-        # inside one process (reconnects then hang in the mirror path), so
-        # the session stays live for the next connection and dies with the
-        # process — like the lab notebooks, which connect once per kernel.
-        self._loop = None
-        self._report_status("Keeping neaSNOM session open for the next connection.")
-
-    def _shutdown_nea_session(self) -> None:
-        """Really close the nea session (host change only — see module note)."""
-        session = _NEA_SESSION
-        loop = session["loop"]
-        try:
-            if loop is not None and not loop.is_closed():
-                with contextlib.suppress(Exception):
-                    asyncio.set_event_loop(loop)
-            with contextlib.suppress(Exception):
-                disconnect_result = nea_tools.disconnect()
-                if inspect.isawaitable(disconnect_result):
-                    if loop is not None and not loop.is_closed():
-                        loop.run_until_complete(disconnect_result)
-                    else:
-
-                        async def _await_disconnect(awaitable: Any) -> None:
-                            await awaitable
-
-                        asyncio.run(_await_disconnect(disconnect_result))
-        finally:
-            session["host"] = None
-            session["connected"] = False
-            session["context"] = None
-            session["stream"] = None
-            session["mirror_cls"] = None
-            self._report_status("Previous neaSNOM session closed.")
 
     # ------------------------------------------------------------------
     # Motion
@@ -334,26 +254,12 @@ class GalvoNeaBackend(GalvoBackend):
                 "range limit — recenter with GoHome (⊙) and retry."
             )
 
-    def move_z_relative(self, dz_nm: float) -> None:
-        self._require_connected()
-        with self._open_mirror() as mirror:
-            mirror.go_relative(0, 0, dz_nm)
-            self._wait_for_mirror(mirror)
-            # Read back the hardware position so the GUI reports what the
-            # mirror actually did, not what we asked for.
-            z_abs_nm = float(mirror.absolute_position[2])
-        self._z_nm = z_abs_nm - self._z0_nm
-
     def read_xy_nm(self) -> Tuple[float, float]:
         """Return galvo position from Read() as (x, y) nm."""
         self._require_connected()
         x_nm, y_nm = self._read_xy_nm_relative_to_startup_home()
         home_x_nm, home_y_nm = self._current_home_xy_nm()
         return (x_nm - home_x_nm, y_nm - home_y_nm)
-
-    def read_z_nm(self) -> float:
-        self._require_connected()
-        return self._z_nm
 
     def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
         self._require_connected()
@@ -382,103 +288,11 @@ class GalvoNeaBackend(GalvoBackend):
         # A step is usable only if it changes the coarser goto-unit target.
         return _available_xy_steps_nm(float(self._galvo.K) * _GOTO_PER_READ_X)
 
-    def available_z_steps_nm(self) -> tuple[float, ...]:
-        self._require_connected()
-        return Z_STEP_OPTIONS_NM
-
-    # ------------------------------------------------------------------
-    # Signal readout
-    # ------------------------------------------------------------------
-
-    def read_sample(self, t_integ_s: float = 0.05) -> SnomSample:
-        """Read optical amplitude and phase via neaSNOM stream (averaged over t_integ_s)."""
-        self._require_connected()
-        keys = [f"O{h}A" for h in range(_N_HARMONICS)] + [f"O{h}P" for h in range(_N_HARMONICS)]
-        totals = {k: 0.0 for k in keys}
-        counts = {k: 0 for k in keys}
-
-        with self._stream_module.Stream() as s:
-            t_end = time.time() + t_integ_s
-            while time.time() < t_end:
-                for k in keys:
-                    try:
-                        v = float(s.data[k][-1])
-                        if v != 0.0:
-                            totals[k] += v
-                            counts[k] += 1
-                    except Exception:  # noqa: BLE001
-                        pass
-                time.sleep(0.02)
-
-        def _get(k: str) -> float:
-            return totals[k] / counts[k] if counts[k] else float("nan")
-
-        xy = self.read_xy_nm()
-        return SnomSample(
-            xy_nm=xy,
-            o_amp=np.array([_get(f"O{h}A") for h in range(_N_HARMONICS)]),
-            o_phase=np.array([_get(f"O{h}P") for h in range(_N_HARMONICS)]),
-        )
-
-    # ------------------------------------------------------------------
-    # Scan — replicates notebook scan_galvo() pattern
-    # ------------------------------------------------------------------
-
-    def scan(
-        self,
-        dx_nm: float,
-        dy_nm: float,
-        nb_x: int,
-        nb_y: int,
-        twait: float,
-        t_integ_s: float,
-        on_point: Callable[[int, int, SnomSample], None],
-        stop_check: Callable[[], bool],
-    ) -> None:
-        """Raster scan. Mirrors notebook scan_galvo() with galvo.Read() for coordinates."""
-        self._require_connected()
-
-        step_x = dx_nm / (nb_x - 1) if nb_x > 1 else 0.0
-        step_y = dy_nm / (nb_y - 1) if nb_y > 1 else 0.0
-
-        # Move to start corner (-dx/2, -dy/2) relative to current centre.
-        self.move_relative(-dx_nm / 2.0, -dy_nm / 2.0)
-        time.sleep(twait)
-        x_start, y_start = self.read_xy_nm()  # actual position after quantisation
-
-        for iy in range(nb_y):
-            for ix in range(nb_x):
-                if stop_check():
-                    break
-
-                sample = self.read_sample(t_integ_s)
-                on_point(ix, iy, sample)
-
-                if ix < nb_x - 1:
-                    self.move_relative(step_x, 0.0)
-                    time.sleep(twait)
-
-            if stop_check():
-                break
-
-            if iy < nb_y - 1:
-                # End of row: correct back to x_start, step y down.
-                x_curr, _ = self.read_xy_nm()
-                self.move_relative(x_start - x_curr, step_y)
-                time.sleep(twait)
-
-        # Return to centre.
-        self.goto_center()
-
     # ------------------------------------------------------------------
 
     def _require_connected(self) -> None:
         if not self._connected:
-            raise GalvoError("GalvoNeaBackend is not connected.")
-
-    # ------------------------------------------------------------------
-    # GB511 access
-    # ------------------------------------------------------------------
+            raise GalvoError("Galvo backend is not connected.")
 
     def _read_gb511_bits(self) -> Tuple[int, int]:
         """Read current galvo position in bits, with output params passed correctly.
@@ -558,6 +372,204 @@ class GalvoNeaBackend(GalvoBackend):
         if isinstance(result, int) and result != 0:
             raise GalvoError(f"{name} failed with code {result}.")
         return result
+
+
+class RealNeaBackend(_StatusReporterMixin, NeaBackend):
+    """Real neaSNOM backend: parabolic-mirror Z axis + optical signal readout.
+
+    Requires ``nea_tools`` + ``nest_asyncio`` installed and a neaSNOM server
+    reachable at *host*.  Import-guarded: instantiation raises GalvoError if
+    the libraries are missing.
+    """
+
+    def __init__(self) -> None:
+        if not NEA_AVAILABLE:
+            raise GalvoError(
+                "nea_tools not available. Run: pip install nea_tools nest_asyncio"
+            )
+        self._connected = False
+        self._loop: Any = None  # asyncio event loop
+        self._context: Any = None  # neaspec.context (post-connect)
+        self._stream_module: Any = None  # nea_tools.microscope.stream
+        self._mirror_cls: Any = None
+        self._z0_nm: float = 0.0
+        self._z_nm: float = 0.0
+        self._status_callback: Callable[[str], None] | None = None
+        self._backend_label = "neaSNOM"
+
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
+
+    def connect(self, host: str = "nea-server") -> None:
+        """Connect to the neaSNOM server and capture the mirror Z reference."""
+        self._report_status(f"Starting connection to {host}.")
+        self._report_status("Opening neaSNOM session...")
+        self._connect_nea_session(host)
+        self._report_status("neaSNOM session ready.")
+        self._report_status("Capturing mirror Z reference...")
+        self._z0_nm = self._read_absolute_mirror_z_nm()
+        self._z_nm = 0.0
+        self._connected = True
+        self._report_status("Connection complete.")
+
+    def disconnect(self) -> None:
+        should_disconnect_session = self._connected or self._loop is not None
+        self._report_status("Starting disconnect.")
+        self._connected = False
+        self._mirror_cls = None
+        self._stream_module = None
+        self._context = None
+        if should_disconnect_session:
+            self._disconnect_nea_session()
+        self._report_status("Disconnect complete.")
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def _connect_nea_session(self, host: str) -> None:
+        session = _NEA_SESSION
+        if session["connected"] and session["host"] == host:
+            # nea_tools cannot re-connect inside one process (see the note at
+            # the top of the module): adopt the live session instead.
+            self._adopt_nea_session()
+            self._report_status("Reusing live neaSNOM session.")
+            return
+        if session["connected"]:
+            self._report_status(
+                "Host changed; closing the previous neaSNOM session. If the "
+                "new connection hangs, restart the application."
+            )
+            self._shutdown_nea_session()
+        loop = session["loop"]
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            nest_asyncio.apply(loop)
+            session["loop"] = loop
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            nea_tools.connect(host, fingerprint=None, path_to_dll="")
+        )
+        # These imports only work after nea_tools.connect has loaded the SDK.
+        import neaspec  # noqa: PLC0415
+        from nea_tools.microscope import stream  # noqa: PLC0415
+        from nea_tools.microscope.motors import Mirror  # noqa: PLC0415
+        session["host"] = host
+        session["connected"] = True
+        session["context"] = neaspec.context
+        session["stream"] = stream
+        session["mirror_cls"] = Mirror
+        self._adopt_nea_session()
+        self._report_status("neaSNOM SDK objects loaded.")
+
+    def _adopt_nea_session(self) -> None:
+        self._loop = _NEA_SESSION["loop"]
+        with contextlib.suppress(Exception):
+            asyncio.set_event_loop(self._loop)
+        self._context = _NEA_SESSION["context"]
+        self._stream_module = _NEA_SESSION["stream"]
+        self._mirror_cls = _NEA_SESSION["mirror_cls"]
+
+    def _disconnect_nea_session(self) -> None:
+        # Deliberately NOT nea_tools.disconnect(): the SDK cannot re-connect
+        # inside one process (reconnects then hang in the mirror path), so
+        # the session stays live for the next connection and dies with the
+        # process — like the lab notebooks, which connect once per kernel.
+        self._loop = None
+        self._report_status("Keeping neaSNOM session open for the next connection.")
+
+    def _shutdown_nea_session(self) -> None:
+        """Really close the nea session (host change only — see module note)."""
+        session = _NEA_SESSION
+        loop = session["loop"]
+        try:
+            if loop is not None and not loop.is_closed():
+                with contextlib.suppress(Exception):
+                    asyncio.set_event_loop(loop)
+            with contextlib.suppress(Exception):
+                disconnect_result = nea_tools.disconnect()
+                if inspect.isawaitable(disconnect_result):
+                    if loop is not None and not loop.is_closed():
+                        loop.run_until_complete(disconnect_result)
+                    else:
+
+                        async def _await_disconnect(awaitable: Any) -> None:
+                            await awaitable
+
+                        asyncio.run(_await_disconnect(disconnect_result))
+        finally:
+            session["host"] = None
+            session["connected"] = False
+            session["context"] = None
+            session["stream"] = None
+            session["mirror_cls"] = None
+            self._report_status("Previous neaSNOM session closed.")
+
+    # ------------------------------------------------------------------
+    # Motion
+    # ------------------------------------------------------------------
+
+    def move_z_relative(self, dz_nm: float) -> None:
+        self._require_connected()
+        with self._open_mirror() as mirror:
+            mirror.go_relative(0, 0, dz_nm)
+            self._wait_for_mirror(mirror)
+            # Read back the hardware position so the GUI reports what the
+            # mirror actually did, not what we asked for.
+            z_abs_nm = float(mirror.absolute_position[2])
+        self._z_nm = z_abs_nm - self._z0_nm
+
+    def read_z_nm(self) -> float:
+        self._require_connected()
+        return self._z_nm
+
+    def available_z_steps_nm(self) -> tuple[float, ...]:
+        self._require_connected()
+        return Z_STEP_OPTIONS_NM
+
+    # ------------------------------------------------------------------
+    # Signal readout
+    # ------------------------------------------------------------------
+
+    def read_sample(
+        self,
+        t_integ_s: float = 0.05,
+        xy_nm: Tuple[float, float] = (0.0, 0.0),
+    ) -> SnomSample:
+        """Read optical amplitude and phase via neaSNOM stream (averaged over t_integ_s)."""
+        self._require_connected()
+        keys = [f"O{h}A" for h in range(_N_HARMONICS)] + [f"O{h}P" for h in range(_N_HARMONICS)]
+        totals = {k: 0.0 for k in keys}
+        counts = {k: 0 for k in keys}
+
+        with self._stream_module.Stream() as s:
+            t_end = time.time() + t_integ_s
+            while time.time() < t_end:
+                for k in keys:
+                    try:
+                        v = float(s.data[k][-1])
+                        if v != 0.0:
+                            totals[k] += v
+                            counts[k] += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+                time.sleep(0.02)
+
+        def _get(k: str) -> float:
+            return totals[k] / counts[k] if counts[k] else float("nan")
+
+        return SnomSample(
+            xy_nm=(float(xy_nm[0]), float(xy_nm[1])),
+            o_amp=np.array([_get(f"O{h}A") for h in range(_N_HARMONICS)]),
+            o_phase=np.array([_get(f"O{h}P") for h in range(_N_HARMONICS)]),
+        )
+
+    # ------------------------------------------------------------------
+
+    def _require_connected(self) -> None:
+        if not self._connected:
+            raise GalvoError("neaSNOM backend is not connected.")
 
     def _read_absolute_mirror_z_nm(self) -> float:
         with self._open_mirror() as mirror:

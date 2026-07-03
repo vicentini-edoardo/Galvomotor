@@ -10,7 +10,7 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication, QLabel
 
 from galvo_gui.gui.main_window import MainWindow
-from galvo_gui.gui.panel_manual import MotionPanel
+from galvo_gui.gui.panel_manual import ConnectionPanel, MotionPanel
 
 
 @pytest.fixture
@@ -21,8 +21,21 @@ def qapp():  # type: ignore[no-untyped-def]
 
 @pytest.fixture(autouse=True)
 def _clear_qsettings() -> None:
-    QSettings("galvo_gui", "MotionPanel").clear()
-    QSettings("galvo_gui", "ManualPanel").clear()
+    for group in ("MotionPanel", "GalvoConnection", "NeaConnection"):
+        QSettings("galvo_gui", group).clear()
+
+
+def _connect_mocks(panel: MotionPanel):
+    """Attach connected mock galvo + neaSNOM backends to a MotionPanel."""
+    from galvo_gui.motion.mock import MockGalvoBackend, MockNeaBackend
+
+    galvo = MockGalvoBackend()
+    nea = MockNeaBackend()
+    galvo.connect()
+    nea.connect()
+    panel.set_galvo_backend(galvo)
+    panel.set_nea_backend(nea)
+    return galvo, nea
 
 
 def test_main_window_has_connection_motion_and_scan_tabs(qapp: object) -> None:
@@ -63,14 +76,32 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     assert not panel._z_step_combo.isEnabled()
 
 
-def test_motion_panel_locks_and_unlocks_with_backend(qapp: object) -> None:
-    from galvo_gui.motion.mock import MockGalvoBackend
-
-    backend = MockGalvoBackend()
-    backend.connect()
+def test_xy_controls_need_galvo_and_z_controls_need_nea(qapp: object) -> None:
+    from galvo_gui.motion.mock import MockGalvoBackend, MockNeaBackend
 
     panel = MotionPanel()
-    panel.set_backend(backend)
+    # Only the galvo connected: XY live, Z still disabled.
+    galvo = MockGalvoBackend()
+    galvo.connect()
+    panel.set_galvo_backend(galvo)
+    assert panel._btn_up.isEnabled()
+    assert not panel._btn_z_up.isEnabled()
+
+    # neaSNOM connected too: Z becomes live.
+    nea = MockNeaBackend()
+    nea.connect()
+    panel.set_nea_backend(nea)
+    assert panel._btn_z_up.isEnabled()
+
+    # Dropping the galvo disables XY but leaves Z alone.
+    panel.clear_galvo_backend()
+    assert not panel._btn_up.isEnabled()
+    assert panel._btn_z_up.isEnabled()
+
+
+def test_motion_panel_locks_and_unlocks_with_backend(qapp: object) -> None:
+    panel = MotionPanel()
+    _connect_mocks(panel)
 
     assert panel._xy_step_combo.isEnabled()
     assert panel._btn_up.isEnabled()
@@ -97,7 +128,7 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative(250.0, -125.0)
-    panel.set_backend(backend)
+    panel.set_galvo_backend(backend)
     panel._set_home()
     panel.save_settings()
 
@@ -117,7 +148,7 @@ def test_motion_panel_go_to_fields_move_to_manual_values(qapp: object) -> None:
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative(300.0, -200.0)
-    panel.set_backend(backend)
+    panel.set_galvo_backend(backend)
 
     panel._goto_x_edit.setText("100")
     panel._goto_y_edit.setText("-50")
@@ -136,7 +167,7 @@ def test_motion_panel_can_switch_xy_units_to_pulses(qapp: object) -> None:
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative(300.0, -200.0)
-    panel.set_backend(backend)
+    panel.set_galvo_backend(backend)
 
     panel._xy_units_combo.setCurrentText("pulses")
     qapp.processEvents()
@@ -163,7 +194,7 @@ def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative(300.0, -200.0)
-    panel.set_backend(backend)
+    panel.set_galvo_backend(backend)
 
     panel._home_x_nm = 100.0
     panel._home_y_nm = -50.0
@@ -199,23 +230,45 @@ def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative(300.0, -200.0)
-    restored.set_backend(backend)
+    restored.set_galvo_backend(backend)
 
     assert backend.read_xy_nm() == (0.0, 0.0)
 
 
-def test_connection_panel_shows_real_and_canon_fields_for_canon_backend(qapp: object) -> None:
-    from galvo_gui.gui.panel_manual import ConnectionPanel
+# ----------------------------------------------------------------------
+# Connection panel
+# ----------------------------------------------------------------------
 
+
+def test_connection_panel_has_separate_nea_and_galvo_sections(qapp: object) -> None:
+    panel = ConnectionPanel()
+
+    assert "neaSNOM" in panel._nea_section.title()
+    assert "Galvo" in panel._galvo_section.title() or "galvo" in panel._galvo_section.title()
+    # neaSNOM has no driver-mode selector; galvo carries it.
+    assert not hasattr(panel._nea_section, "_mode_combo")
+    assert [
+        panel._galvo_section._mode_combo.itemText(i)
+        for i in range(panel._galvo_section._mode_combo.count())
+    ] == [
+        "Simulated galvo (no hardware)",
+        "GB511 board (galvo_functions)",
+        "Canon GC-211/212 (GB511 + RS-232 high-speed)",
+    ]
+
+
+def test_galvo_section_shows_canon_fields_for_canon_mode(qapp: object) -> None:
     panel = ConnectionPanel()
     panel.show()
-    panel._backend_combo.setCurrentIndex(2)
+    galvo = panel._galvo_section
+    galvo._mode_combo.setCurrentIndex(galvo.MODE_CANON)
 
-    assert panel._serial_port_edit.isVisible()
-    assert panel._board_index_edit.isVisible()
-    assert panel._program_file_edit.isVisible()
-    assert panel._host_edit.isVisible()
-    assert panel._cal_edit.isVisible()
+    assert galvo._serial_port_edit.isVisible()
+    assert galvo._board_index_edit.isVisible()
+    assert galvo._program_file_edit.isVisible()
+    assert galvo._cal_edit.isVisible()
+
+
 def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
     import time
 
@@ -227,11 +280,10 @@ def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
 
 
 def test_connect_and_disconnect_run_off_the_gui_thread(qapp) -> None:
-    """A slow backend.connect must not freeze the panel: the button switches to
-    a progress label immediately and the connection completes via the worker."""
+    """A slow backend.connect must not freeze the section: the button switches
+    to a progress label immediately and the connection completes via the worker."""
     import time
 
-    from galvo_gui.gui.panel_manual import ConnectionPanel
     from galvo_gui.motion.mock import MockGalvoBackend
 
     original_connect = MockGalvoBackend.connect
@@ -243,38 +295,38 @@ def test_connect_and_disconnect_run_off_the_gui_thread(qapp) -> None:
     MockGalvoBackend.connect = slow_connect
     try:
         panel = ConnectionPanel()
-        panel._backend_combo.setCurrentIndex(0)
-        panel._on_connect_toggle()
+        section = panel._galvo_section
+        section._mode_combo.setCurrentIndex(section.MODE_SIMULATED)
+        section._on_connect_toggle()
 
         # Immediately after the click the GUI is free and shows progress.
-        assert panel._connect_btn.text() == "Connecting…"
-        assert not panel._connect_btn.isEnabled()
-        assert panel._backend is None
+        assert section._connect_btn.text() == "Connecting…"
+        assert not section._connect_btn.isEnabled()
+        assert section._backend is None
 
-        _process_until(qapp, lambda: panel._backend is not None)
-        assert panel._connect_btn.text() == "Disconnect"
-        assert panel._connect_btn.isEnabled()
-        assert not panel._backend_combo.isEnabled()
+        _process_until(qapp, lambda: section._backend is not None)
+        assert section._connect_btn.text() == "Disconnect"
+        assert section._connect_btn.isEnabled()
+        assert not section._mode_combo.isEnabled()
     finally:
         MockGalvoBackend.connect = original_connect
 
-    panel._on_connect_toggle()
-    assert panel._connect_btn.text() == "Disconnecting…"
-    assert panel._backend is None  # detached before hardware teardown
+    section._on_connect_toggle()
+    assert section._connect_btn.text() == "Disconnecting…"
+    assert section._backend is None  # detached before hardware teardown
 
-    _process_until(qapp, lambda: panel._connect_btn.text() == "Connect")
-    assert panel._connect_btn.isEnabled()
-    assert panel._backend_combo.isEnabled()
+    _process_until(qapp, lambda: section._connect_btn.text() == "Connect")
+    assert section._connect_btn.isEnabled()
+    assert section._mode_combo.isEnabled()
 
 
 def test_reconnect_after_disconnect_completes_on_the_same_worker_thread(qapp, monkeypatch) -> None:
     """Regression: after a disconnect the worker thread was torn down, so the
-    next connect ran on a fresh thread. The thread-affine neaSNOM SDK then
-    hung until the app was restarted. Connect, disconnect, and reconnect must
-    all run on one persistent worker thread."""
+    next connect ran on a fresh thread. The thread-affine SDK then hung until
+    the app was restarted. Connect, disconnect, and reconnect must all run on
+    one persistent worker thread."""
     import threading
 
-    from galvo_gui.gui.panel_manual import ConnectionPanel
     from galvo_gui.motion.mock import MockGalvoBackend
 
     op_thread_idents: list[int] = []
@@ -293,26 +345,27 @@ def test_reconnect_after_disconnect_completes_on_the_same_worker_thread(qapp, mo
     monkeypatch.setattr(MockGalvoBackend, "disconnect", recording_disconnect)
 
     panel = ConnectionPanel()
-    panel._backend_combo.setCurrentIndex(0)
+    section = panel._galvo_section
+    section._mode_combo.setCurrentIndex(section.MODE_SIMULATED)
 
-    panel._on_connect_toggle()  # first connect
-    _process_until(qapp, lambda: panel._backend is not None)
-    first_thread = panel._op_thread
+    section._on_connect_toggle()  # first connect
+    _process_until(qapp, lambda: section._backend is not None)
+    first_thread = section._op_thread
     assert first_thread is not None and first_thread.isRunning()
 
-    panel._on_connect_toggle()  # disconnect
+    section._on_connect_toggle()  # disconnect
     _process_until(
         qapp,
-        lambda: panel._connect_btn.text() == "Connect" and panel._connect_btn.isEnabled(),
+        lambda: section._connect_btn.text() == "Connect" and section._connect_btn.isEnabled(),
     )
-    assert panel._op_thread is first_thread  # thread survives the disconnect
+    assert section._op_thread is first_thread  # thread survives the disconnect
 
-    panel._on_connect_toggle()  # reconnect — this used to hang on hardware
-    _process_until(qapp, lambda: panel._backend is not None)
+    section._on_connect_toggle()  # reconnect — this used to hang on hardware
+    _process_until(qapp, lambda: section._backend is not None)
 
-    assert panel._backend.is_connected()
-    assert panel._connect_btn.text() == "Disconnect"
-    assert panel._op_thread is first_thread
+    assert section._backend.is_connected()
+    assert section._connect_btn.text() == "Disconnect"
+    assert section._op_thread is first_thread
     assert op_thread_idents and len(set(op_thread_idents)) == 1
     assert op_thread_idents[0] != threading.get_ident()  # and off the GUI thread
 
@@ -325,7 +378,6 @@ def test_close_while_connected_disconnects_on_the_worker_thread(qapp) -> None:
     worker thread so the process can exit cleanly."""
     import threading
 
-    from galvo_gui.gui.panel_manual import ConnectionPanel
     from galvo_gui.motion.mock import MockGalvoBackend
 
     disconnect_idents: list[int] = []
@@ -338,11 +390,12 @@ def test_close_while_connected_disconnects_on_the_worker_thread(qapp) -> None:
     MockGalvoBackend.disconnect = recording_disconnect
     try:
         panel = ConnectionPanel()
-        panel._backend_combo.setCurrentIndex(0)
-        panel._on_connect_toggle()
-        _process_until(qapp, lambda: panel._backend is not None)
-        backend = panel._backend
-        op_thread = panel._op_thread
+        section = panel._galvo_section
+        section._mode_combo.setCurrentIndex(section.MODE_SIMULATED)
+        section._on_connect_toggle()
+        _process_until(qapp, lambda: section._backend is not None)
+        backend = section._backend
+        op_thread = section._op_thread
 
         panel.close()
     finally:
@@ -350,12 +403,11 @@ def test_close_while_connected_disconnects_on_the_worker_thread(qapp) -> None:
 
     assert not backend.is_connected()
     assert disconnect_idents and disconnect_idents[0] != threading.get_ident()
-    assert panel._op_thread is None
+    assert section._op_thread is None
     assert not op_thread.isRunning()
 
 
-def test_connect_failure_reenables_the_panel(qapp) -> None:
-    from galvo_gui.gui.panel_manual import ConnectionPanel
+def test_connect_failure_reenables_the_section(qapp) -> None:
     from galvo_gui.motion.mock import MockGalvoBackend
 
     original_connect = MockGalvoBackend.connect
@@ -366,42 +418,50 @@ def test_connect_failure_reenables_the_panel(qapp) -> None:
     MockGalvoBackend.connect = failing_connect
     try:
         panel = ConnectionPanel()
-        panel._backend_combo.setCurrentIndex(0)
-        panel._on_connect_toggle()
-        _process_until(qapp, lambda: panel._connect_btn.text() == "Connect")
+        section = panel._galvo_section
+        section._mode_combo.setCurrentIndex(section.MODE_SIMULATED)
+        section._on_connect_toggle()
+        _process_until(qapp, lambda: section._connect_btn.text() == "Connect")
     finally:
         MockGalvoBackend.connect = original_connect
 
-    assert panel._backend is None
-    assert panel._connect_btn.isEnabled()
-    assert panel._backend_combo.isEnabled()
+    assert section._backend is None
+    assert section._connect_btn.isEnabled()
+    assert section._mode_combo.isEnabled()
     assert "Connection failed: server unreachable" in panel._log.toPlainText()
 
 
-def test_connection_panel_persists_canon_settings(qapp: object) -> None:
-    from galvo_gui.gui.panel_manual import ConnectionPanel
-
+def test_galvo_section_persists_canon_settings(qapp: object) -> None:
     panel = ConnectionPanel()
-    panel._settings.clear()
-    panel._backend_combo.setCurrentIndex(2)
-    panel._serial_port_edit.setText("COM8")
-    panel._board_index_edit.setText("3")
-    panel._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
-    panel.save_settings()
+    section = panel._galvo_section
+    section._settings.clear()
+    section._mode_combo.setCurrentIndex(section.MODE_CANON)
+    section._serial_port_edit.setText("COM8")
+    section._board_index_edit.setText("3")
+    section._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
+    section.save_settings()
 
-    restored = ConnectionPanel()
+    restored = ConnectionPanel()._galvo_section
 
-    assert restored._backend_combo.currentIndex() == 2
+    assert restored._mode_combo.currentIndex() == section.MODE_CANON
     assert restored._serial_port_edit.text() == "COM8"
     assert restored._board_index_edit.text() == "3"
     assert restored._program_file_edit.text() == r"C:\Canon\gb511_core0.hex"
 
 
-def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(
-    qapp, monkeypatch
-) -> None:
+def test_nea_section_persists_host(qapp: object) -> None:
+    panel = ConnectionPanel()
+    section = panel._nea_section
+    section._settings.clear()
+    section._host_edit.setText("nea-box.local")
+    section.save_settings()
+
+    restored = ConnectionPanel()._nea_section
+    assert restored._host_edit.text() == "nea-box.local"
+
+
+def test_galvo_section_passes_canon_settings_to_canon_backend(qapp, monkeypatch) -> None:
     import galvo_gui.motion.canon.backend as canon_backend_module
-    from galvo_gui.gui.panel_manual import ConnectionPanel
 
     captured = {}
 
@@ -433,14 +493,14 @@ def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(
     monkeypatch.setattr(canon_backend_module, "CanonGalvoBackend", FakeCanonBackend)
 
     panel = ConnectionPanel()
-    panel._backend_combo.setCurrentIndex(2)
-    panel._host_edit.setText("nea-server")
-    panel._cal_edit.setText("/tmp/cal_files")
-    panel._serial_port_edit.setText("COM8")
-    panel._board_index_edit.setText("3")
-    panel._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
-    panel._connect()
-    _process_until(qapp, lambda: panel._backend is not None)
+    section = panel._galvo_section
+    section._mode_combo.setCurrentIndex(section.MODE_CANON)
+    section._cal_edit.setText("/tmp/cal_files")
+    section._serial_port_edit.setText("COM8")
+    section._board_index_edit.setText("3")
+    section._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
+    section._connect()
+    _process_until(qapp, lambda: section._backend is not None)
 
     assert captured["init"] == {
         "cal_files_path": "/tmp/cal_files",
@@ -448,12 +508,12 @@ def test_connection_panel_passes_real_and_canon_settings_to_canon_backend(
         "program_file": r"C:\Canon\gb511_core0.hex",
         "serial_port": "COM8",
     }
-    assert captured["connect_host"] == "nea-server"
+    # The galvo connection does not address a neaSNOM host.
+    assert captured["connect_host"] == ""
 
 
-def test_connection_panel_does_not_force_invalid_canon_board_index(qapp, monkeypatch) -> None:
+def test_galvo_section_does_not_force_invalid_canon_board_index(qapp, monkeypatch) -> None:
     import galvo_gui.motion.canon.backend as canon_backend_module
-    from galvo_gui.gui.panel_manual import ConnectionPanel
 
     captured = {}
 
@@ -480,9 +540,10 @@ def test_connection_panel_does_not_force_invalid_canon_board_index(qapp, monkeyp
     monkeypatch.setattr(canon_backend_module, "CanonGalvoBackend", FakeCanonBackend)
 
     panel = ConnectionPanel()
-    panel._backend_combo.setCurrentIndex(2)
-    panel._board_index_edit.setText("0")
-    panel._connect()
-    _process_until(qapp, lambda: panel._backend is not None)
+    section = panel._galvo_section
+    section._mode_combo.setCurrentIndex(section.MODE_CANON)
+    section._board_index_edit.setText("0")
+    section._connect()
+    _process_until(qapp, lambda: section._backend is not None)
 
     assert captured["board_index"] is None

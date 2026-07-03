@@ -1,4 +1,4 @@
-"""Tests for local hardware config bundle path resolution."""
+"""Tests for the real galvo/neaSNOM backends and config bundle path resolution."""
 
 from __future__ import annotations
 
@@ -60,6 +60,24 @@ class _FakeGalvo:
         return bits / _FakeGalvo.K
 
 
+def _make_galvo(wrapper: object | None = None, galvo: object | None = None):
+    backend = object.__new__(galvo_nea.RealGalvoBackend)
+    backend._connected = True
+    backend._status_callback = None
+    if galvo is not None:
+        backend._galvo = galvo
+    if wrapper is not None:
+        backend._gb511_wrap = wrapper
+    return backend
+
+
+def _make_nea():
+    backend = object.__new__(galvo_nea.RealNeaBackend)
+    backend._connected = True
+    backend._status_callback = None
+    return backend
+
+
 def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:
     """move_relative must replicate the working notebook's galvo_move: absolute
     target = current read pulses + K*delta, commanded as round(CX * target).
@@ -68,10 +86,7 @@ def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:
 
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
     wrapper = _FakeWrapper()
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = wrapper
+    backend = _make_galvo(wrapper, _FakeGalvo())
 
     backend.move_relative(100.0, -50.0)
 
@@ -99,10 +114,7 @@ def test_single_axis_jogs_do_not_disturb_the_other_axis(monkeypatch) -> None:
     wrapper = _FakeWrapper()
     wrapper.ctr_goto_xy(111, 222)  # park at a position the board can report
     wrapper.goto_calls.clear()
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = wrapper
+    backend = _make_galvo(wrapper, _FakeGalvo())
 
     y_bit_start = wrapper._y_bit
     for _ in range(10):
@@ -120,10 +132,7 @@ def test_back_and_forth_jogs_return_to_the_same_position(monkeypatch) -> None:
     wrapper = _FakeWrapper()
     wrapper.ctr_goto_xy(111, 222)  # park at a position the board can report
     wrapper.goto_calls.clear()
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = wrapper
+    backend = _make_galvo(wrapper, _FakeGalvo())
 
     x_bit_start = wrapper._x_bit
     backend.move_relative(500.0, 0.0)
@@ -139,10 +148,7 @@ def test_move_relative_raises_when_axis_does_not_follow(monkeypatch) -> None:
     """A railed/ignored axis must surface as an error via read-back, not no-op."""
 
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = _FakeWrapper(drop_moves=True)
+    backend = _make_galvo(_FakeWrapper(drop_moves=True), _FakeGalvo())
 
     with pytest.raises(GalvoError, match="produced no motion"):
         backend.move_relative(100.0, 0.0)
@@ -153,10 +159,7 @@ def test_move_relative_skips_readback_below_goto_resolution(monkeypatch) -> None
     verified by read-back and must not be reported as a dropped move."""
 
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = _FakeWrapper(drop_moves=True)
+    backend = _make_galvo(_FakeWrapper(drop_moves=True), _FakeGalvo())
 
     backend.move_relative(0.1, 0.0)  # 0.179 read pulses ≈ 0.02 goto units
 
@@ -166,10 +169,7 @@ def test_goto_center_converts_home_to_goto_units() -> None:
     K*X0 read pulses, commanded as round(CX * K * X0) goto units."""
 
     wrapper = _FakeWrapper()
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = wrapper
+    backend = _make_galvo(wrapper, _FakeGalvo())
 
     backend.goto_center()
 
@@ -180,10 +180,7 @@ def test_goto_center_converts_home_to_goto_units() -> None:
 
 def test_set_home_redefines_origin_and_goto_center() -> None:
     wrapper = _FakeWrapper()
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
-    backend._gb511_wrap = wrapper
+    backend = _make_galvo(wrapper, _FakeGalvo())
 
     assert backend.set_home() == (
         pytest.approx((1000 / 1.79) - 400.0),
@@ -198,9 +195,7 @@ def test_set_home_redefines_origin_and_goto_center() -> None:
 def test_available_xy_steps_require_a_full_goto_unit() -> None:
     """Steps below the goto-unit resolution (~5 nm at K=1.79) are unusable."""
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._galvo = _FakeGalvo()
+    backend = _make_galvo(galvo=_FakeGalvo())
 
     assert backend.available_xy_steps_nm() == (50.0, 100.0, 500.0, 1000.0)
 
@@ -221,9 +216,7 @@ def test_read_gb511_bits_passes_byref_to_raw_dll_handles(monkeypatch) -> None:
             return 0
 
     monkeypatch.setattr(galvo_nea, "_is_raw_dll", lambda obj: True)
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._gb511_wrap = FakeDll()
+    backend = _make_galvo(FakeDll())
 
     assert backend._read_gb511_bits() == (1234, -567)
 
@@ -233,9 +226,7 @@ def test_gb511_nonzero_return_code_raises_galvo_error() -> None:
         def ctr_get_current_xy_pos(self, x: object, y: object) -> int:
             return 5  # board refuses the command
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._gb511_wrap = FakeWrapper()
+    backend = _make_galvo(FakeWrapper())
 
     with pytest.raises(GalvoError, match="ctr_get_current_xy_pos failed with code 5"):
         backend._read_gb511_bits()
@@ -246,9 +237,7 @@ def test_gb511_native_exception_wrapped_as_galvo_error() -> None:
         def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
             raise OSError("exception: access violation writing 0x0000000000000000")
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._gb511_wrap = FakeWrapper()
+    backend = _make_galvo(FakeWrapper())
 
     with pytest.raises(GalvoError, match="ctr_get_current_xy_pos failed"):
         backend._read_gb511_bits()
@@ -273,8 +262,7 @@ def test_z_reads_use_cached_position_and_moves_refresh_cache() -> None:
             self.relative_moves.append((dx, dy, dz))
             self.absolute_position[2] += dz
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
+    backend = _make_nea()
     backend._mirror_cls = FakeMirror
     backend._loop = None
     backend._z0_nm = 100.0
@@ -303,8 +291,7 @@ def test_z_move_reports_hardware_readback_not_requested_delta() -> None:
         def go_relative(self, dx: float, dy: float, dz: float) -> None:
             pass  # motor never moves
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
+    backend = _make_nea()
     backend._mirror_cls = StalledMirror
     backend._loop = None
     backend._z0_nm = 100.0
@@ -343,11 +330,10 @@ def test_disconnect_keeps_the_nea_session_alive(monkeypatch) -> None:
         raising=False,
     )
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
-    backend._connected = True
-    backend._status_callback = None
+    backend = _make_nea()
     backend._loop = FakeLoop()
-    backend._gb511_wrap = object()
+    backend._stream_module = object()
+    backend._context = object()
     backend._mirror_cls = object()
 
     backend.disconnect()
@@ -358,26 +344,43 @@ def test_disconnect_keeps_the_nea_session_alive(monkeypatch) -> None:
     assert backend._loop is None
 
 
-def test_real_connect_reports_stage_progress(monkeypatch) -> None:
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+def test_nea_connect_reports_stage_progress(monkeypatch) -> None:
+    backend = object.__new__(galvo_nea.RealNeaBackend)
     messages: list[str] = []
     backend._status_callback = messages.append
-    backend._backend_label = "Real"
+    backend._backend_label = "neaSNOM"
 
     monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
-    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
-    monkeypatch.setattr(backend, "_complete_connect", lambda: None)
+    monkeypatch.setattr(backend, "_read_absolute_mirror_z_nm", lambda: 0.0)
 
     backend.connect("nea-host")
 
     assert messages == [
-        "Real: Starting connection to nea-host.",
-        "Real: Opening neaSNOM session...",
-        "Real: neaSNOM session ready.",
-        "Real: Opening galvo hardware...",
-        "Real: Galvo hardware ready.",
-        "Real: Validating hardware read-back...",
-        "Real: Connection complete.",
+        "neaSNOM: Starting connection to nea-host.",
+        "neaSNOM: Opening neaSNOM session...",
+        "neaSNOM: neaSNOM session ready.",
+        "neaSNOM: Capturing mirror Z reference...",
+        "neaSNOM: Connection complete.",
+    ]
+
+
+def test_galvo_connect_reports_stage_progress(monkeypatch) -> None:
+    backend = object.__new__(galvo_nea.RealGalvoBackend)
+    messages: list[str] = []
+    backend._status_callback = messages.append
+    backend._backend_label = "Galvo"
+
+    monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
+    monkeypatch.setattr(backend, "_validate_readback", lambda: None)
+
+    backend.connect()
+
+    assert messages == [
+        "Galvo: Starting galvo connection.",
+        "Galvo: Opening galvo hardware...",
+        "Galvo: Galvo hardware ready.",
+        "Galvo: Validating hardware read-back...",
+        "Galvo: Galvo connection complete.",
     ]
 
 
@@ -398,12 +401,12 @@ def test_open_galvo_hardware_reuses_the_board_handle_across_reconnects(monkeypat
     monkeypatch.setattr(galvo_nea, "_GalvoHW", lambda cal: SimpleNamespace(), raising=False)
     monkeypatch.setattr(galvo_nea, "_GB511_SHARED", {"wrap": None, "kwargs": None})
 
-    first = object.__new__(galvo_nea.GalvoNeaBackend)
+    first = object.__new__(galvo_nea.RealGalvoBackend)
     first._cal_path = "cal"
     first._status_callback = None
     first._open_galvo_hardware()
 
-    second = object.__new__(galvo_nea.GalvoNeaBackend)  # reconnect
+    second = object.__new__(galvo_nea.RealGalvoBackend)  # reconnect
     second._cal_path = "cal"
     second._status_callback = None
     second._open_galvo_hardware()
@@ -413,7 +416,7 @@ def test_open_galvo_hardware_reuses_the_board_handle_across_reconnects(monkeypat
     assert second._gb511_wrap is board
 
     # Different board settings are not served from the cache.
-    third = object.__new__(galvo_nea.GalvoNeaBackend)
+    third = object.__new__(galvo_nea.RealGalvoBackend)
     third._cal_path = "cal"
     third._status_callback = None
     third._board_index = 5
@@ -469,7 +472,7 @@ def test_reconnect_adopts_the_live_nea_session(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "nea_tools.microscope.stream", microscope.stream)
     monkeypatch.setitem(sys.modules, "nea_tools.microscope.motors", microscope.motors)
 
-    first = object.__new__(galvo_nea.GalvoNeaBackend)
+    first = object.__new__(galvo_nea.RealNeaBackend)
     first._status_callback = None
     first._connect_nea_session("nea-host")
     loop = first._loop
@@ -480,7 +483,7 @@ def test_reconnect_adopts_the_live_nea_session(monkeypatch) -> None:
     assert disconnect_calls == []  # session left live on purpose
     assert not loop.is_closed()
 
-    second = object.__new__(galvo_nea.GalvoNeaBackend)  # reconnect
+    second = object.__new__(galvo_nea.RealNeaBackend)  # reconnect
     second._status_callback = None
     second._connect_nea_session("nea-host")
 
@@ -490,7 +493,7 @@ def test_reconnect_adopts_the_live_nea_session(monkeypatch) -> None:
     assert applied == [loop]  # nest_asyncio applied exactly once
 
     # A different host is the one case that really tears down and reconnects.
-    third = object.__new__(galvo_nea.GalvoNeaBackend)
+    third = object.__new__(galvo_nea.RealNeaBackend)
     third._status_callback = None
     third._connect_nea_session("other-host")
     assert disconnect_calls == [True]
@@ -499,7 +502,7 @@ def test_reconnect_adopts_the_live_nea_session(monkeypatch) -> None:
     loop.close()  # test hygiene only; the app keeps it open
 
 
-def test_complete_connect_rejects_a_dead_position_readback() -> None:
+def test_validate_readback_rejects_a_dead_position_readback() -> None:
     """A reconnect into a board whose read-back reports the -2**19 sentinel on
     both axes must fail loudly instead of connecting into hardware that
     silently ignores every move."""
@@ -509,11 +512,11 @@ def test_complete_connect_rejects_a_dead_position_readback() -> None:
             x.value = -(2**19)
             y.value = -(2**19)
 
-    backend = object.__new__(galvo_nea.GalvoNeaBackend)
+    backend = object.__new__(galvo_nea.RealGalvoBackend)
     backend._gb511_wrap = SentinelWrapper()
     backend._status_callback = None
 
     with pytest.raises(GalvoError, match="not live"):
-        backend._complete_connect()
+        backend._validate_readback()
 
     assert not getattr(backend, "_connected", False)

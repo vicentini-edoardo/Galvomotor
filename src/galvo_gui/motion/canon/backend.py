@@ -5,20 +5,20 @@ import time
 
 from galvo_gui.motion.base import GalvoError
 from galvo_gui.motion.canon.rs232 import CanonRS232
-from galvo_gui.motion.galvo_nea import _DEFAULT_CAL_FILES_PATH, GalvoNeaBackend
+from galvo_gui.motion.galvo_nea import _DEFAULT_CAL_FILES_PATH, RealGalvoBackend
 
 _AXES = (1, 2)
 _HOMING_TIMEOUT_S = 30.0
 _HOMING_POLL_S = 0.2
 
 
-class CanonGalvoBackend(GalvoNeaBackend):
-    """Full real backend plus Canon RS-232 mode management.
+class CanonGalvoBackend(RealGalvoBackend):
+    """Galvomotor XY backend plus Canon RS-232 mode management.
 
-    This backend keeps the same functionality as ``GalvoNeaBackend`` for
-    XY motion, Z motion, signal readout, and scans. Its extra job is to
-    bring the Canon controller into high-speed mode over RS-232 so the
-    existing ``galvo_functions`` / GB511 path can drive the galvomotor.
+    This backend keeps the same XY functionality as ``RealGalvoBackend``. Its
+    extra job is to bring the Canon GC-211/212 controller into high-speed mode
+    over RS-232 so the existing ``galvo_functions`` / GB511 path can drive the
+    galvomotor.
     """
 
     def __init__(
@@ -37,13 +37,10 @@ class CanonGalvoBackend(GalvoNeaBackend):
         self._serial_port = serial_port
         self._rs232_connected = False
 
-    def connect(self, host: str = "nea-server") -> None:
+    def connect(self, host: str = "") -> None:
         galvo_open = False
         try:
-            self._report_status(f"Starting connection to {host}.")
-            self._report_status("Opening neaSNOM session...")
-            self._connect_nea_session(host)
-            self._report_status("neaSNOM session ready.")
+            self._report_status("Starting galvo connection.")
             self._report_status("Opening galvo hardware...")
             self._open_galvo_hardware()
             galvo_open = True
@@ -55,8 +52,9 @@ class CanonGalvoBackend(GalvoNeaBackend):
             self._prepare_axes_for_high_speed()
             self._report_status("Canon axes ready in high-speed mode.")
             self._report_status("Validating hardware read-back...")
-            self._complete_connect()
-            self._report_status("Connection complete.")
+            self._validate_readback()
+            self._connected = True
+            self._report_status("Galvo connection complete.")
         except Exception:
             self._report_status("Connection failed; unwinding partial session...")
             self._unwind_failed_connect(galvo_open=galvo_open)
@@ -126,16 +124,7 @@ class CanonGalvoBackend(GalvoNeaBackend):
     def _unwind_failed_connect(self, *, galvo_open: bool) -> None:
         self._connected = False
         self._restore_rs232_mode()
+        # No board-close API is available in the legacy galvo_functions path;
+        # drop references so a later connect reopens/reuses the shared handle.
         self._gb511_wrap = None
         self._galvo = None
-        self._mirror_cls = None
-        self._stream_module = None
-        self._context = None
-        self._z_nm = 0.0
-        if galvo_open:
-            # No board-close API is available in the legacy galvo_functions
-            # path; drop references and unwind the neaSNOM session instead.
-            self._disconnect_nea_session()
-        else:
-            with contextlib.suppress(Exception):
-                self._disconnect_nea_session()

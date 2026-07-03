@@ -9,7 +9,7 @@ pytest.importorskip("PyQt6")
 import h5py
 from PyQt6.QtWidgets import QApplication
 
-from galvo_gui.motion.mock import MockGalvoBackend
+from galvo_gui.motion.mock import MockGalvoBackend, MockNeaBackend
 from galvo_gui.workers.scan import ScanWorker
 
 
@@ -21,11 +21,14 @@ def qapp():  # type: ignore[no-untyped-def]
 
 def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  # noqa: F821
     """Worker completes a 3×3 scan and saves a valid HDF5."""
-    backend = MockGalvoBackend(seed=7)
-    backend.connect()
+    galvo = MockGalvoBackend()
+    nea = MockNeaBackend(seed=7)
+    galvo.connect()
+    nea.connect()
 
     worker = ScanWorker(
-        backend=backend,
+        galvo=galvo,
+        nea=nea,
         dx_nm=300.0,
         dy_nm=300.0,
         nb_x=3,
@@ -56,16 +59,20 @@ def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  
         assert "coordinates" in h5
         assert h5["coordinates"].shape == (3, 3, 2)
 
-    backend.disconnect()
+    galvo.disconnect()
+    nea.disconnect()
 
 
 def test_scan_worker_stop(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  # noqa: F821
     """Worker stops cooperatively when stop() is called."""
-    backend = MockGalvoBackend(seed=0)
-    backend.connect()
+    galvo = MockGalvoBackend()
+    nea = MockNeaBackend(seed=0)
+    galvo.connect()
+    nea.connect()
 
     worker = ScanWorker(
-        backend=backend,
+        galvo=galvo,
+        nea=nea,
         dx_nm=500.0,
         dy_nm=500.0,
         nb_x=10,
@@ -87,4 +94,5 @@ def test_scan_worker_stop(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  # noqa
         worker.start()
 
     # Worker finished without crashing
-    backend.disconnect()
+    galvo.disconnect()
+    nea.disconnect()

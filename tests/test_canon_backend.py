@@ -54,31 +54,25 @@ def _make_backend(monkeypatch, rs232: FakeRS232 | None = None) -> CanonGalvoBack
     )
 
 
-def test_connect_runs_real_backend_startup_plus_canon_rs232_sequence(monkeypatch) -> None:
+def test_connect_runs_galvo_startup_plus_canon_rs232_sequence(monkeypatch) -> None:
     rs = FakeRS232()
     backend = _make_backend(monkeypatch, rs)
     calls: list[tuple[str, object]] = []
 
-    def fake_connect_nea_session(self, host: str) -> None:
-        calls.append(("connect_nea_session", host))
-
     def fake_open_galvo_hardware(self) -> None:
         calls.append(("open_galvo_hardware", None))
 
-    def fake_complete_connect(self) -> None:
-        calls.append(("complete_connect", None))
-        self._connected = True
+    def fake_validate_readback(self) -> None:
+        calls.append(("validate_readback", None))
 
-    backend._connect_nea_session = MethodType(fake_connect_nea_session, backend)
     backend._open_galvo_hardware = MethodType(fake_open_galvo_hardware, backend)
-    backend._complete_connect = MethodType(fake_complete_connect, backend)
+    backend._validate_readback = MethodType(fake_validate_readback, backend)
 
-    backend.connect("nea-host")
+    backend.connect()
 
     assert calls == [
-        ("connect_nea_session", "nea-host"),
         ("open_galvo_hardware", None),
-        ("complete_connect", None),
+        ("validate_readback", None),
     ]
     assert rs.calls == [
         ("connect", "COM7"),
@@ -99,32 +93,21 @@ def test_connect_homes_unsynced_axes_before_high_speed(monkeypatch) -> None:
     rs._status[2] = False
     backend = _make_backend(monkeypatch, rs)
 
-    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
-    monkeypatch.setattr(backend, "_complete_connect", lambda: setattr(backend, "_connected", True))
+    monkeypatch.setattr(backend, "_validate_readback", lambda: None)
 
-    backend.connect("nea-host")
+    backend.connect()
 
     assert ("home", 2) in rs.calls
     assert rs.calls.index(("home", 2)) < rs.calls.index(("switch_high_speed", 1))
 
 
-def test_disconnect_restores_rs232_mode_before_real_backend_teardown(monkeypatch) -> None:
+def test_disconnect_restores_rs232_mode_before_galvo_teardown(monkeypatch) -> None:
     rs = FakeRS232()
     backend = _make_backend(monkeypatch, rs)
     backend._connected = True
     backend._rs232_connected = True
     backend._gb511_wrap = object()
-    backend._mirror_cls = object()
-    backend._stream_module = object()
-    backend._context = object()
-
-    teardown = []
-
-    def fake_disconnect_nea_session() -> None:
-        teardown.append("disconnect_nea_session")
-
-    monkeypatch.setattr(backend, "_disconnect_nea_session", fake_disconnect_nea_session)
 
     backend.disconnect()
 
@@ -135,38 +118,26 @@ def test_disconnect_restores_rs232_mode_before_real_backend_teardown(monkeypatch
         ("servo_off", 2),
         ("disconnect",),
     ]
-    assert teardown == ["disconnect_nea_session"]
     assert backend.is_connected() is False
+    assert backend._gb511_wrap is None
 
 
-def test_failed_connect_unwinds_rs232_and_nea_session(monkeypatch) -> None:
+def test_failed_connect_unwinds_rs232(monkeypatch) -> None:
     rs = FakeRS232()
     backend = _make_backend(monkeypatch, rs)
     teardown = []
 
-    monkeypatch.setattr(
-        backend, "_connect_nea_session", lambda host: teardown.append(("nea", host))
-    )
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: teardown.append(("galvo", None)))
     monkeypatch.setattr(
         backend,
-        "_complete_connect",
+        "_validate_readback",
         lambda: (_ for _ in ()).throw(RuntimeError("readback failed")),
     )
 
-    def fake_disconnect_nea_session() -> None:
-        teardown.append(("disconnect_nea_session", None))
-
-    monkeypatch.setattr(backend, "_disconnect_nea_session", fake_disconnect_nea_session)
-
     with pytest.raises(RuntimeError, match="readback failed"):
-        backend.connect("nea-host")
+        backend.connect()
 
-    assert teardown == [
-        ("nea", "nea-host"),
-        ("galvo", None),
-        ("disconnect_nea_session", None),
-    ]
+    assert teardown == [("galvo", None)]
     assert rs.calls == [
         ("connect", "COM7"),
         ("clear_error", 1),
@@ -192,16 +163,13 @@ def test_canon_connect_reports_stage_progress(monkeypatch) -> None:
     messages: list[str] = []
     backend.set_status_callback(messages.append)
 
-    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
-    monkeypatch.setattr(backend, "_complete_connect", lambda: setattr(backend, "_connected", True))
+    monkeypatch.setattr(backend, "_validate_readback", lambda: None)
 
-    backend.connect("nea-host")
+    backend.connect()
 
     assert messages == [
-        "Canon: Starting connection to nea-host.",
-        "Canon: Opening neaSNOM session...",
-        "Canon: neaSNOM session ready.",
+        "Canon: Starting galvo connection.",
         "Canon: Opening galvo hardware...",
         "Canon: Galvo hardware ready.",
         "Canon: Opening Canon RS-232 link...",
@@ -213,7 +181,7 @@ def test_canon_connect_reports_stage_progress(monkeypatch) -> None:
         "Canon: Switching Canon axes to high-speed mode...",
         "Canon: Canon axes ready in high-speed mode.",
         "Canon: Validating hardware read-back...",
-        "Canon: Connection complete.",
+        "Canon: Galvo connection complete.",
     ]
 
 
@@ -251,11 +219,10 @@ def test_connect_waits_for_homing_to_finish_before_high_speed(monkeypatch) -> No
     rs = SlowHomingRS232(polls_needed=3)
     rs._status[2] = False
     backend = _make_backend(monkeypatch, rs)
-    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
-    monkeypatch.setattr(backend, "_complete_connect", lambda: setattr(backend, "_connected", True))
+    monkeypatch.setattr(backend, "_validate_readback", lambda: None)
 
-    backend.connect("nea-host")
+    backend.connect()
 
     polls_for_axis_2 = [c for c in rs.calls if c == ("read_status", 2)]
     assert len(polls_for_axis_2) >= 3  # waited through the homing
@@ -279,11 +246,10 @@ def test_connect_fails_and_unwinds_when_homing_never_syncs(monkeypatch) -> None:
     rs = NeverSyncRS232()
     rs._status[1] = False
     backend = _make_backend(monkeypatch, rs)
-    monkeypatch.setattr(backend, "_connect_nea_session", lambda host: None)
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
 
     with pytest.raises(GalvoError, match="did not report sync"):
-        backend.connect("nea-host")
+        backend.connect()
 
     # Failed connect unwinds: axes back to RS-232 mode, servos off.
     assert ("switch_rs232", 1) in rs.calls
