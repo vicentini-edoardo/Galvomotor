@@ -515,17 +515,25 @@ class GalvoNeaBackend(GalvoBackend):
     ) -> bool:
         """Command an absolute target given in read pulses (notebook galvo_move).
 
+        The read→goto conversion must use round(), never int(): ctr_goto_xy
+        commands BOTH axes, so an axis that is not meant to move gets its
+        target re-derived from the quantised read-back on every call.  With
+        truncation that re-derivation lands one goto unit low about half the
+        time (int(CX * round(g / CX)) == g - 1), so jogging X dragged Y along
+        (and vice versa), and every back-and-forth pair on the moving axis
+        drifted one goto unit (~9 read pulses) per round trip.
+
         Returns False when the target quantises onto the goto-unit position of
         *ref* (the current position, read if not supplied), i.e. the request is
         below the board's command resolution and no motion can be expected.
         """
-        gx = int(_GOTO_PER_READ_X * x_read)
-        gy = int(_GOTO_PER_READ_Y * y_read)
+        gx = round(_GOTO_PER_READ_X * x_read)
+        gy = round(_GOTO_PER_READ_Y * y_read)
         xb_now, yb_now = ref if ref is not None else self._read_gb511_bits()
         self._call_gb511("ctr_goto_xy", gx, gy)
         return (gx, gy) != (
-            int(_GOTO_PER_READ_X * xb_now),
-            int(_GOTO_PER_READ_Y * yb_now),
+            round(_GOTO_PER_READ_X * xb_now),
+            round(_GOTO_PER_READ_Y * yb_now),
         )
 
     def _call_gb511(self, name: str, *args: Any) -> Any:
