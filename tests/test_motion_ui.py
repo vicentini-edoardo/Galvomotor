@@ -58,6 +58,7 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     assert panel._btn_z_up.text() == "▲"
     assert panel._btn_z_down.text() == "▼"
     assert panel._btn_set_home.text() == "Set Home"
+    assert panel._btn_go_xy.text() == "Go"
     assert not panel._xy_step_combo.isEnabled()
     assert not panel._z_step_combo.isEnabled()
 
@@ -109,29 +110,23 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
     assert restored._home_label.text() == "250, -125"
 
 
-def test_motion_panel_home_fields_apply_manual_values(qapp: object) -> None:
+def test_motion_panel_go_to_fields_move_to_manual_values(qapp: object) -> None:
     from galvo_gui.motion.mock import MockGalvoBackend
 
     panel = MotionPanel()
-    panel._settings.clear()
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative(300.0, -200.0)
     panel.set_backend(backend)
 
-    panel._home_x_edit.setText("100")
-    panel._home_y_edit.setText("-50")
-    panel._home_x_edit.editingFinished.emit()
+    panel._goto_x_edit.setText("100")
+    panel._goto_y_edit.setText("-50")
+    panel._go_to_xy()
     qapp.processEvents()
 
-    assert panel._home_x_nm == 100.0
-    assert panel._home_y_nm == -50.0
-    assert panel._home_label.text() == "100, -50"
-    assert backend.read_xy_nm() == (200.0, -150.0)
-
-    restored = MotionPanel()
-    assert restored._home_x_edit.text() == "100"
-    assert restored._home_y_edit.text() == "-50"
+    assert backend.read_xy_nm() == (100.0, -50.0)
+    assert panel._x_label.text() == "100"
+    assert panel._y_label.text() == "-50"
 
 
 def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -> None:
@@ -144,10 +139,10 @@ def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -
     backend.move_relative(300.0, -200.0)
     panel.set_backend(backend)
 
-    panel._home_x_edit.setText("100")
-    panel._home_y_edit.setText("-50")
-    panel._home_x_edit.editingFinished.emit()
-    qapp.processEvents()
+    panel._home_x_nm = 100.0
+    panel._home_y_nm = -50.0
+    panel._apply_backend_home()
+    panel._update_home_label()
 
     panel._set_origin()
 

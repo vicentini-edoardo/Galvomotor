@@ -544,8 +544,10 @@ class MotionPanel(QWidget):
         self._x_label = self._build_motion_readout("--")
         self._y_label = self._build_motion_readout("--")
         self._home_label = self._build_motion_readout("0, 0", home=True)
-        self._home_x_edit = self._build_home_edit("0")
-        self._home_y_edit = self._build_home_edit("0")
+        self._goto_x_edit = self._build_numeric_edit("0")
+        self._goto_y_edit = self._build_numeric_edit("0")
+        self._btn_go_xy = QPushButton("Go")
+        self._btn_go_xy.clicked.connect(self._go_to_xy)
         self._btn_set_home = QPushButton("Set Home")
         self._btn_set_home.clicked.connect(self._set_home)
 
@@ -555,7 +557,7 @@ class MotionPanel(QWidget):
         readouts.addWidget(self._build_readout_column("Y live", self._y_label))
         readouts.addSpacing(2)
         readouts.addWidget(self._build_readout_column("Home", self._home_label))
-        readouts.addWidget(self._build_home_editor_row())
+        readouts.addWidget(self._build_goto_row())
         readouts.addWidget(self._btn_set_home, alignment=Qt.AlignmentFlag.AlignLeft)
         readouts.addStretch()
         body.addLayout(readouts, 1)
@@ -628,23 +630,24 @@ class MotionPanel(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         return label
 
-    def _build_home_edit(self, text: str) -> QLineEdit:
+    def _build_numeric_edit(self, text: str) -> QLineEdit:
         edit = QLineEdit(text)
         edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         edit.setFixedWidth(72)
         edit.setValidator(QDoubleValidator(edit))
-        edit.editingFinished.connect(self._apply_home_from_edits)
         return edit
 
-    def _build_home_editor_row(self) -> QWidget:
+    def _build_goto_row(self) -> QWidget:
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        layout.addWidget(QLabel("Go To"))
         layout.addWidget(QLabel("X"))
-        layout.addWidget(self._home_x_edit)
+        layout.addWidget(self._goto_x_edit)
         layout.addWidget(QLabel("Y"))
-        layout.addWidget(self._home_y_edit)
+        layout.addWidget(self._goto_y_edit)
+        layout.addWidget(self._btn_go_xy)
         layout.addStretch()
         return widget
 
@@ -749,6 +752,21 @@ class MotionPanel(QWidget):
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Set home error: {exc}")
 
+    def _go_to_xy(self) -> None:
+        if self._backend is None:
+            return
+        try:
+            target_x_nm = float(self._goto_x_edit.text())
+            target_y_nm = float(self._goto_y_edit.text())
+        except ValueError:
+            return
+        try:
+            current_x_nm, current_y_nm = self._current_xy_from_origin_nm()
+            self._backend.move_relative(target_x_nm - current_x_nm, target_y_nm - current_y_nm)
+            self._refresh_position()
+        except Exception as exc:  # noqa: BLE001
+            self.log_message.emit(f"Go to error: {exc}")
+
     def _set_origin(self) -> None:
         if self._backend is None:
             return
@@ -844,6 +862,7 @@ class MotionPanel(QWidget):
             self._btn_left,
             self._btn_right,
             self._btn_center,
+            self._btn_go_xy,
             self._btn_set_home,
         ):
             btn.setEnabled(enable_xy)
@@ -852,9 +871,8 @@ class MotionPanel(QWidget):
         self._xy_step_combo.setEnabled(enable_xy)
         self._z_step_combo.setEnabled(enable_z)
         self._menu_button.setEnabled(enable_xy)
-        home_edit_enabled = not self._locked
-        self._home_x_edit.setEnabled(home_edit_enabled)
-        self._home_y_edit.setEnabled(home_edit_enabled)
+        self._goto_x_edit.setEnabled(enable_xy)
+        self._goto_y_edit.setEnabled(enable_xy)
 
     def _restore_settings(self) -> None:
         xy_step = self._settings.value("xy_step_nm", "100")
@@ -883,29 +901,6 @@ class MotionPanel(QWidget):
 
     def _update_home_label(self) -> None:
         self._home_label.setText(f"{self._home_x_nm:.0f}, {self._home_y_nm:.0f}")
-        self._home_x_edit.setText(f"{self._home_x_nm:.0f}")
-        self._home_y_edit.setText(f"{self._home_y_nm:.0f}")
-
-    def _apply_home_from_edits(self) -> None:
-        try:
-            home_x_nm = float(self._home_x_edit.text())
-            home_y_nm = float(self._home_y_edit.text())
-        except ValueError:
-            self._update_home_label()
-            return
-
-        self._home_x_nm = home_x_nm
-        self._home_y_nm = home_y_nm
-        if self._backend is not None:
-            try:
-                self._apply_backend_home()
-            except Exception as exc:  # noqa: BLE001
-                self.log_message.emit(f"Set home error: {exc}")
-                self._update_home_label()
-                return
-            self._refresh_position()
-        self._update_home_label()
-        self.save_settings()
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
