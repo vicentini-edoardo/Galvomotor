@@ -129,6 +129,32 @@ def test_motion_panel_go_to_fields_move_to_manual_values(qapp: object) -> None:
     assert panel._y_label.text() == "-50"
 
 
+def test_motion_panel_can_switch_xy_units_to_pulses(qapp: object) -> None:
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    panel = MotionPanel()
+    backend = MockGalvoBackend()
+    backend.connect()
+    backend.move_relative(300.0, -200.0)
+    panel.set_backend(backend)
+
+    panel._xy_units_combo.setCurrentText("pulses")
+    qapp.processEvents()
+
+    assert panel._x_label.text() == "300"
+    assert panel._y_label.text() == "-200"
+    assert panel._goto_x_edit.text() == "0"
+    assert panel._goto_y_edit.text() == "0"
+
+    panel._goto_x_edit.setText("100")
+    panel._goto_y_edit.setText("-50")
+    panel._go_to_xy()
+
+    assert backend.read_xy_nm() == (100.0, -50.0)
+    assert panel._x_label.text() == "100"
+    assert panel._y_label.text() == "-50"
+
+
 def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -> None:
     from galvo_gui.motion.mock import MockGalvoBackend
 

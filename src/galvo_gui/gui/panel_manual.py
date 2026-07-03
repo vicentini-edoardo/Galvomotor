@@ -453,6 +453,7 @@ class MotionPanel(QWidget):
         self._home_y_nm = 0.0
         self._origin_x_nm = 0.0
         self._origin_y_nm = 0.0
+        self._xy_units = "nm"
         self._build_ui()
         self._restore_settings()
 
@@ -495,11 +496,15 @@ class MotionPanel(QWidget):
         title.setObjectName("MotionClusterTitle")
         header.addWidget(title)
         header.addStretch()
-        step_label = QLabel("Step (nm)")
-        step_label.setObjectName("MotionInlineLabel")
-        header.addWidget(step_label)
+        self._xy_step_label = QLabel("Step (nm)")
+        self._xy_step_label.setObjectName("MotionInlineLabel")
+        header.addWidget(self._xy_step_label)
         self._xy_step_combo = self._build_step_combo(STANDARD_STEP_OPTIONS_NM, "100")
         header.addWidget(self._xy_step_combo)
+        self._xy_units_combo = QComboBox()
+        self._xy_units_combo.addItems(["nm", "pulses"])
+        self._xy_units_combo.currentTextChanged.connect(self._set_xy_units)
+        header.addWidget(self._xy_units_combo)
         self._menu_button = self._build_motion_menu_button()
         header.addWidget(self._menu_button)
         outer.addLayout(header)
@@ -618,8 +623,8 @@ class MotionPanel(QWidget):
     def _build_step_combo(self, options: tuple[float, ...], default: str) -> QComboBox:
         combo = QComboBox()
         for step_nm in options:
-            combo.addItem(f"{step_nm:g}")
-        combo.setCurrentText(default)
+            combo.addItem(f"{step_nm:g}", step_nm)
+        self._set_combo_value(combo, float(default))
         return combo
 
     def _build_motion_readout(self, text: str, *, home: bool = False) -> ReadoutLabel:
@@ -677,6 +682,60 @@ class MotionPanel(QWidget):
     def _backend_home_xy_nm(self) -> tuple[float, float]:
         return (self._origin_x_nm + self._home_x_nm, self._origin_y_nm + self._home_y_nm)
 
+    def _xy_pulses_per_nm(self) -> float:
+        galvo = getattr(self._backend, "_galvo", None)
+        k = getattr(galvo, "K", None)
+        try:
+            scale = float(k)
+        except (TypeError, ValueError):
+            return 1.0
+        return scale if scale > 0 else 1.0
+
+    def _xy_to_display(self, value_nm: float) -> float:
+        if self._xy_units == "pulses":
+            return value_nm * self._xy_pulses_per_nm()
+        return value_nm
+
+    def _xy_from_display(self, value: float) -> float:
+        if self._xy_units == "pulses":
+            return value / self._xy_pulses_per_nm()
+        return value
+
+    def _format_xy_value(self, value_nm: float) -> str:
+        return f"{self._xy_to_display(value_nm):.0f}"
+
+    def _set_combo_value(self, combo: QComboBox, value_nm: float) -> None:
+        for idx in range(combo.count()):
+            if float(combo.itemData(idx)) == float(value_nm):
+                combo.setCurrentIndex(idx)
+                return
+
+    def _sync_xy_step_combo_labels(self) -> None:
+        current_step_nm = float(self._xy_step_combo.currentData())
+        for idx in range(self._xy_step_combo.count()):
+            step_nm = float(self._xy_step_combo.itemData(idx))
+            self._xy_step_combo.setItemText(idx, f"{self._xy_to_display(step_nm):g}")
+        self._set_combo_value(self._xy_step_combo, current_step_nm)
+        self._xy_step_label.setText(f"Step ({self._xy_units})")
+
+    def _sync_xy_target_edits(self, x_nm: float | None = None, y_nm: float | None = None) -> None:
+        x_nm = 0.0 if x_nm is None else x_nm
+        y_nm = 0.0 if y_nm is None else y_nm
+        self._goto_x_edit.setText(self._format_xy_value(x_nm))
+        self._goto_y_edit.setText(self._format_xy_value(y_nm))
+
+    def _set_xy_units(self, units: str) -> None:
+        if units not in {"nm", "pulses"} or units == self._xy_units:
+            return
+        target_x_nm = self._xy_from_display(float(self._goto_x_edit.text() or 0.0))
+        target_y_nm = self._xy_from_display(float(self._goto_y_edit.text() or 0.0))
+        self._xy_units = units
+        self._sync_xy_step_combo_labels()
+        self._update_home_label()
+        self._sync_xy_target_edits(target_x_nm, target_y_nm)
+        self._refresh_position()
+        self.save_settings()
+
     def _current_xy_from_origin_nm(self) -> tuple[float, float]:
         if self._backend is None:
             return (self._home_x_nm, self._home_y_nm)
@@ -711,7 +770,7 @@ class MotionPanel(QWidget):
     def _jog_xy(self, sign_x: int, sign_y: int) -> None:
         if self._backend is None:
             return
-        step_nm = float(self._xy_step_combo.currentText())
+        step_nm = float(self._xy_step_combo.currentData())
         try:
             self._backend.move_relative(sign_x * step_nm, sign_y * step_nm)
             self._refresh_position()
@@ -756,8 +815,8 @@ class MotionPanel(QWidget):
         if self._backend is None:
             return
         try:
-            target_x_nm = float(self._goto_x_edit.text())
-            target_y_nm = float(self._goto_y_edit.text())
+            target_x_nm = self._xy_from_display(float(self._goto_x_edit.text()))
+            target_y_nm = self._xy_from_display(float(self._goto_y_edit.text()))
         except ValueError:
             return
         try:
@@ -802,8 +861,8 @@ class MotionPanel(QWidget):
                 self.log_message.emit(msg)
             return
         self._last_position_error = None
-        self._x_label.setText(f"{x_nm:.0f}")
-        self._y_label.setText(f"{y_nm:.0f}")
+        self._x_label.setText(self._format_xy_value(x_nm))
+        self._y_label.setText(self._format_xy_value(y_nm))
         self._z_label.setText(f"{z_nm:.0f}")
 
     def _apply_step_availability(self) -> None:
@@ -826,11 +885,11 @@ class MotionPanel(QWidget):
     ) -> None:
         model = combo.model()
         item_fn = getattr(model, "item", None)
-        available_labels = {f"{step_nm:g}" for step_nm in available_steps}
+        available_steps_set = {float(step_nm) for step_nm in available_steps}
         for idx in range(combo.count()):
             item = item_fn(idx) if callable(item_fn) else None
             if item is not None:
-                item.setEnabled(combo.itemText(idx) in available_labels)
+                item.setEnabled(float(combo.itemData(idx)) in available_steps_set)
 
     def _ensure_combo_selection(
         self,
@@ -839,9 +898,9 @@ class MotionPanel(QWidget):
     ) -> None:
         if not available_steps:
             return
-        if combo.currentText() in {f"{step_nm:g}" for step_nm in available_steps}:
+        if float(combo.currentData()) in {float(step_nm) for step_nm in available_steps}:
             return
-        combo.setCurrentText(f"{available_steps[0]:g}")
+        self._set_combo_value(combo, float(available_steps[0]))
 
     def _set_controls_enabled(self, xy_enabled: bool, z_enabled: bool) -> None:
         enable_xy = (
@@ -870,6 +929,7 @@ class MotionPanel(QWidget):
             btn.setEnabled(enable_z)
         self._xy_step_combo.setEnabled(enable_xy)
         self._z_step_combo.setEnabled(enable_z)
+        self._xy_units_combo.setEnabled(enable_xy)
         self._menu_button.setEnabled(enable_xy)
         self._goto_x_edit.setEnabled(enable_xy)
         self._goto_y_edit.setEnabled(enable_xy)
@@ -877,10 +937,14 @@ class MotionPanel(QWidget):
     def _restore_settings(self) -> None:
         xy_step = self._settings.value("xy_step_nm", "100")
         z_step = self._settings.value("z_step_nm", "1000")
-        if isinstance(xy_step, str):
-            self._xy_step_combo.setCurrentText(xy_step)
+        xy_units = self._settings.value("xy_units", "nm")
+        with contextlib.suppress(Exception):
+            self._set_combo_value(self._xy_step_combo, float(xy_step))
         if isinstance(z_step, str):
             self._z_step_combo.setCurrentText(z_step)
+        if isinstance(xy_units, str) and xy_units in {"nm", "pulses"}:
+            self._xy_units = xy_units
+            self._xy_units_combo.setCurrentText(xy_units)
         with contextlib.suppress(Exception):
             self._home_x_nm = float(self._settings.value("home_x_nm", 0.0))
         with contextlib.suppress(Exception):
@@ -889,18 +953,23 @@ class MotionPanel(QWidget):
             self._origin_x_nm = float(self._settings.value("origin_x_nm", 0.0))
         with contextlib.suppress(Exception):
             self._origin_y_nm = float(self._settings.value("origin_y_nm", 0.0))
+        self._sync_xy_step_combo_labels()
+        self._sync_xy_target_edits()
         self._update_home_label()
 
     def save_settings(self) -> None:
-        self._settings.setValue("xy_step_nm", self._xy_step_combo.currentText())
+        self._settings.setValue("xy_step_nm", self._xy_step_combo.currentData())
         self._settings.setValue("z_step_nm", self._z_step_combo.currentText())
+        self._settings.setValue("xy_units", self._xy_units)
         self._settings.setValue("home_x_nm", self._home_x_nm)
         self._settings.setValue("home_y_nm", self._home_y_nm)
         self._settings.setValue("origin_x_nm", self._origin_x_nm)
         self._settings.setValue("origin_y_nm", self._origin_y_nm)
 
     def _update_home_label(self) -> None:
-        self._home_label.setText(f"{self._home_x_nm:.0f}, {self._home_y_nm:.0f}")
+        self._home_label.setText(
+            f"{self._format_xy_value(self._home_x_nm)}, {self._format_xy_value(self._home_y_nm)}"
+        )
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()
