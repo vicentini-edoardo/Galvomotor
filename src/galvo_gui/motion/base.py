@@ -20,7 +20,10 @@ from typing import Callable, Tuple
 import numpy as np
 
 _N_HARMONICS = 6
-STANDARD_STEP_OPTIONS_NM = (0.1, 50.0, 100.0, 500.0, 1000.0)
+# The galvomotor is commanded and read in encoder pulses — its native unit.
+# Manual XY control works directly in pulses so a jog never round-trips
+# through nm (pulse → nm → pulse), which is both lossy and pointless.
+STANDARD_STEP_OPTIONS_PULSES = (1.0, 10.0, 100.0, 1000.0, 10000.0)
 # The parabolic-mirror Z axis needs far coarser jogs than the galvo: the lab
 # notebooks step it in ~1000 nm increments, and sub-100 nm requests are within
 # the positioner's deadband.
@@ -43,9 +46,16 @@ class SnomSample:
 class GalvoBackend(ABC):
     """Abstract interface for galvomotor **XY** motion.
 
-    All move calls are **relative** (nm) from the current position.
-    The galvo origin (0, 0) is the active home/center position established
-    at startup or by the last ``set_home`` call.
+    The canonical unit is **encoder pulses**, the galvo's native command/read
+    unit. All move calls are **relative** (pulses) from the current position;
+    the origin (0, 0) is the active home/center established at startup or by
+    the last ``set_home_pulses`` call.
+
+    The ``*_nm`` helpers below are thin convenience wrappers (a single
+    ``pulses_per_nm`` conversion) so callers that think in nanometres — e.g.
+    the scan's range spec — can still drive the stage without re-implementing
+    the conversion. They must not be used to round-trip a value that is
+    already in pulses.
     """
 
     @abstractmethod
@@ -66,23 +76,25 @@ class GalvoBackend(ABC):
     def is_connected(self) -> bool: ...
 
     @abstractmethod
-    def move_relative(self, dx_nm: float, dy_nm: float) -> None:
-        """Move galvo by (dx_nm, dy_nm) from current position."""
+    def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
+        """Move galvo by (dx_p, dy_p) encoder pulses from current position."""
         ...
 
     @abstractmethod
-    def read_xy_nm(self) -> Tuple[float, float]:
-        """Return current galvo position (x, y) in nm relative to center."""
+    def read_xy_pulses(self) -> Tuple[float, float]:
+        """Return current galvo position (x, y) in pulses relative to center."""
         ...
 
     @abstractmethod
-    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
-        """Set the galvo home/center used by ``read_xy_nm`` and ``goto_center``.
+    def set_home_pulses(
+        self, x_p: float | None = None, y_p: float | None = None
+    ) -> Tuple[float, float]:
+        """Set the galvo home/center used by ``read_xy_pulses``/``goto_center``.
 
-        When *x_nm* and *y_nm* are omitted, the backend must capture the
-        current physical XY position as the new home.  When provided, the
-        coordinates are absolute nm in the backend's startup reference frame,
-        so a persisted home can be restored on a later session.
+        When *x_p* and *y_p* are omitted, the backend must capture the current
+        physical XY position as the new home. When provided, the coordinates
+        are absolute pulses in the backend's startup reference frame, so a
+        persisted home can be restored on a later session.
         """
         ...
 
@@ -92,9 +104,37 @@ class GalvoBackend(ABC):
         ...
 
     @abstractmethod
-    def available_xy_steps_nm(self) -> tuple[float, ...]:
-        """Return the supported XY jog step sizes from STANDARD_STEP_OPTIONS_NM."""
+    def available_xy_steps_pulses(self) -> tuple[float, ...]:
+        """Return the supported XY jog step sizes (pulses) that actually move
+        the stage — i.e. large enough to change the coarse goto-unit command."""
         ...
+
+    @abstractmethod
+    def pulses_per_nm(self) -> float:
+        """Encoder pulses per nanometre (the calibration scale K)."""
+        ...
+
+    # -- nm convenience wrappers (single conversion; never chain them) ----
+
+    def move_relative(self, dx_nm: float, dy_nm: float) -> None:
+        """Move by (dx_nm, dy_nm) nanometres — converted once to pulses."""
+        k = self.pulses_per_nm()
+        self.move_relative_pulses(dx_nm * k, dy_nm * k)
+
+    def read_xy_nm(self) -> Tuple[float, float]:
+        """Return current galvo position (x, y) in nm relative to center."""
+        k = self.pulses_per_nm()
+        x_p, y_p = self.read_xy_pulses()
+        return (x_p / k, y_p / k)
+
+    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
+        """nm counterpart of ``set_home_pulses``."""
+        k = self.pulses_per_nm()
+        if x_nm is None or y_nm is None:
+            x_p, y_p = self.set_home_pulses()
+        else:
+            x_p, y_p = self.set_home_pulses(x_nm * k, y_nm * k)
+        return (x_p / k, y_p / k)
 
 
 class NeaBackend(ABC):

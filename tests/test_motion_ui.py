@@ -55,12 +55,13 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     assert not panel._z_step_combo.isEditable()
     assert any(label.text() == "Galvomotor XY" for label in panel.findChildren(QLabel))
     assert any(label.text() == "neaSNOM Z" for label in panel.findChildren(QLabel))
+    # The galvo is controlled in encoder pulses (its native unit).
     assert [panel._xy_step_combo.itemText(i) for i in range(panel._xy_step_combo.count())] == [
-        "0.1",
-        "50",
+        "1",
+        "10",
         "100",
-        "500",
         "1000",
+        "10000",
     ]
     assert [panel._z_step_combo.itemText(i) for i in range(panel._z_step_combo.count())] == [
         "10",
@@ -123,21 +124,21 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
 
     panel = MotionPanel()
     panel._settings.clear()
-    panel._xy_step_combo.setCurrentText("50")
+    panel._xy_step_combo.setCurrentText("10")
     panel._z_step_combo.setCurrentText("10000")
     backend = MockGalvoBackend()
     backend.connect()
-    backend.move_relative(250.0, -125.0)
+    backend.move_relative_pulses(250.0, -125.0)
     panel.set_galvo_backend(backend)
     panel._set_home()
     panel.save_settings()
 
     restored = MotionPanel()
 
-    assert restored._xy_step_combo.currentText() == "50"
+    assert restored._xy_step_combo.currentText() == "10"
     assert restored._z_step_combo.currentText() == "10000"
-    assert restored._home_x_nm == 250.0
-    assert restored._home_y_nm == -125.0
+    assert restored._home_x_p == 250.0
+    assert restored._home_y_p == -125.0
     assert restored._home_label.text() == "250, -125"
 
 
@@ -193,26 +194,26 @@ def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -
     panel._settings.clear()
     backend = MockGalvoBackend()
     backend.connect()
-    backend.move_relative(300.0, -200.0)
+    backend.move_relative_pulses(300.0, -200.0)
     panel.set_galvo_backend(backend)
 
-    panel._home_x_nm = 100.0
-    panel._home_y_nm = -50.0
+    panel._home_x_p = 100.0
+    panel._home_y_p = -50.0
     panel._apply_backend_home()
     panel._update_home_label()
 
     panel._set_origin()
 
-    assert panel._origin_x_nm == 300.0
-    assert panel._origin_y_nm == -200.0
-    assert panel._home_x_nm == -200.0
-    assert panel._home_y_nm == 150.0
+    assert panel._origin_x_p == 300.0
+    assert panel._origin_y_p == -200.0
+    assert panel._home_x_p == -200.0
+    assert panel._home_y_p == 150.0
     assert panel._x_label.text() == "0"
     assert panel._y_label.text() == "0"
 
     panel._goto_center()
 
-    assert backend.read_xy_nm() == (0.0, 0.0)
+    assert backend.read_xy_pulses() == (0.0, 0.0)
     assert panel._x_label.text() == "-200"
     assert panel._y_label.text() == "150"
 
@@ -220,8 +221,8 @@ def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -
 def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
     panel = MotionPanel()
     panel._settings.clear()
-    panel._home_x_nm = 300.0
-    panel._home_y_nm = -200.0
+    panel._home_x_p = 300.0
+    panel._home_y_p = -200.0
     panel.save_settings()
 
     restored = MotionPanel()
@@ -229,10 +230,10 @@ def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
 
     backend = MockGalvoBackend()
     backend.connect()
-    backend.move_relative(300.0, -200.0)
+    backend.move_relative_pulses(300.0, -200.0)
     restored.set_galvo_backend(backend)
 
-    assert backend.read_xy_nm() == (0.0, 0.0)
+    assert backend.read_xy_pulses() == (0.0, 0.0)
 
 
 # ----------------------------------------------------------------------

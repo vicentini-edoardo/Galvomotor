@@ -9,7 +9,7 @@ from typing import Tuple
 import numpy as np
 
 from galvo_gui.motion.base import (
-    STANDARD_STEP_OPTIONS_NM,
+    STANDARD_STEP_OPTIONS_PULSES,
     Z_STEP_OPTIONS_NM,
     GalvoBackend,
     GalvoError,
@@ -18,17 +18,20 @@ from galvo_gui.motion.base import (
 )
 
 _N_HARMONICS = 6
+# Mock calibration scale: 1 pulse per nm keeps the nm wrappers numerically
+# equal to the pulse values, which keeps the (nm-based) scan tests simple.
+_MOCK_PULSES_PER_NM = 1.0
 
 
 class MockGalvoBackend(GalvoBackend):
-    """Simulates galvomotor XY moves (no hardware required)."""
+    """Simulates galvomotor XY moves in encoder pulses (no hardware required)."""
 
     def __init__(self) -> None:
         self._connected = False
-        self._x_nm: float = 0.0
-        self._y_nm: float = 0.0
-        self._home_x_nm: float = 0.0
-        self._home_y_nm: float = 0.0
+        self._x_p: float = 0.0
+        self._y_p: float = 0.0
+        self._home_x_p: float = 0.0
+        self._home_y_p: float = 0.0
 
     # ------------------------------------------------------------------
     # Connection
@@ -44,37 +47,42 @@ class MockGalvoBackend(GalvoBackend):
         return self._connected
 
     # ------------------------------------------------------------------
-    # Motion
+    # Motion (pulses)
     # ------------------------------------------------------------------
 
-    def move_relative(self, dx_nm: float, dy_nm: float) -> None:
+    def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
         self._require_connected()
-        self._x_nm += dx_nm
-        self._y_nm += dy_nm
+        self._x_p += dx_p
+        self._y_p += dy_p
 
-    def read_xy_nm(self) -> Tuple[float, float]:
+    def read_xy_pulses(self) -> Tuple[float, float]:
         self._require_connected()
-        return (self._x_nm - self._home_x_nm, self._y_nm - self._home_y_nm)
+        return (self._x_p - self._home_x_p, self._y_p - self._home_y_p)
 
-    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
+    def set_home_pulses(
+        self, x_p: float | None = None, y_p: float | None = None
+    ) -> Tuple[float, float]:
         self._require_connected()
-        if (x_nm is None) != (y_nm is None):
-            raise ValueError("x_nm and y_nm must be provided together.")
-        if x_nm is None or y_nm is None:
-            self._home_x_nm = self._x_nm
-            self._home_y_nm = self._y_nm
+        if (x_p is None) != (y_p is None):
+            raise ValueError("x_p and y_p must be provided together.")
+        if x_p is None or y_p is None:
+            self._home_x_p = self._x_p
+            self._home_y_p = self._y_p
         else:
-            self._home_x_nm = float(x_nm)
-            self._home_y_nm = float(y_nm)
-        return (self._home_x_nm, self._home_y_nm)
+            self._home_x_p = float(x_p)
+            self._home_y_p = float(y_p)
+        return (self._home_x_p, self._home_y_p)
 
     def goto_center(self) -> None:
         self._require_connected()
-        self._x_nm = self._home_x_nm
-        self._y_nm = self._home_y_nm
+        self._x_p = self._home_x_p
+        self._y_p = self._home_y_p
 
-    def available_xy_steps_nm(self) -> tuple[float, ...]:
-        return STANDARD_STEP_OPTIONS_NM
+    def available_xy_steps_pulses(self) -> tuple[float, ...]:
+        return STANDARD_STEP_OPTIONS_PULSES
+
+    def pulses_per_nm(self) -> float:
+        return _MOCK_PULSES_PER_NM
 
     # ------------------------------------------------------------------
 

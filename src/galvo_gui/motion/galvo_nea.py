@@ -26,7 +26,7 @@ from typing import Any, Callable, Tuple
 import numpy as np
 
 from galvo_gui.motion.base import (
-    STANDARD_STEP_OPTIONS_NM,
+    STANDARD_STEP_OPTIONS_PULSES,
     Z_STEP_OPTIONS_NM,
     GalvoBackend,
     GalvoError,
@@ -136,8 +136,9 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         # of vendor attribute lookups like Galvo.Move.
         self._galvo: Any = None  # galvo_functions.Galvo instance
         self._gb511_wrap: Any = None  # CanonGB511 low-level wrapper
-        self._home_x_nm: float = 0.0
-        self._home_y_nm: float = 0.0
+        # Active home offset, in read pulses relative to the calibrated centre.
+        self._home_x_p: float = 0.0
+        self._home_y_p: float = 0.0
         # Last goto units commanded per axis. ctr_goto_xy always commands both
         # axes, so the axis a jog does not move is re-commanded to this stored
         # value instead of a value re-quantised from the noisy read-back —
@@ -233,15 +234,15 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
     # Motion
     # ------------------------------------------------------------------
 
-    def move_relative(self, dx_nm: float, dy_nm: float) -> None:
-        """Move galvo by (dx_nm, dy_nm) relative to current position.
+    def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
+        """Move galvo by (dx_p, dy_p) encoder pulses relative to current position.
 
         Replicates the working notebook's scan() pattern: read the current
-        position in read pulses, add the displacement (K [pulse/nm] from the
-        galvocal file), and command the absolute target through the
-        galvo_move() unit conversion.  galvo_functions.Galvo.Move is not used:
-        it is absolute-from-home (repeated jogs would not accumulate) and it
-        skips the goto-unit conversion (targets land ~9x out of range).
+        position in read pulses, add the pulse displacement, and command the
+        absolute target through the galvo_move() goto-unit conversion.
+        galvo_functions.Galvo.Move is not used: it is absolute-from-home
+        (repeated jogs would not accumulate) and it skips the goto-unit
+        conversion (targets land ~9x out of range).
 
         ctr_goto_xy always commands both axes, so an axis with a zero request
         is held at its last commanded goto unit (``_cmd_g*``).  Re-deriving it
@@ -254,12 +255,12 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         gx_cur = round(_GOTO_PER_READ_X * xb_before)
         gy_cur = round(_GOTO_PER_READ_Y * yb_before)
 
-        if dx_nm:
-            gx_target = round(_GOTO_PER_READ_X * (xb_before + self._galvo.K * dx_nm))
+        if dx_p:
+            gx_target = round(_GOTO_PER_READ_X * (xb_before + dx_p))
         else:
             gx_target = self._parked_goto(getattr(self, "_cmd_gx", None), gx_cur)
-        if dy_nm:
-            gy_target = round(_GOTO_PER_READ_Y * (yb_before + self._galvo.K * dy_nm))
+        if dy_p:
+            gy_target = round(_GOTO_PER_READ_Y * (yb_before + dy_p))
         else:
             gy_target = self._parked_goto(getattr(self, "_cmd_gy", None), gy_cur)
 
@@ -274,7 +275,7 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         xb_after, yb_after = self._read_gb511_bits()
         if (xb_after, yb_after) == (xb_before, yb_before):
             raise GalvoError(
-                f"Galvo move ({dx_nm:g}, {dy_nm:g}) nm produced no motion: read-back "
+                f"Galvo move ({dx_p:g}, {dy_p:g}) pulses produced no motion: read-back "
                 f"stayed at ({xb_before}, {yb_before}) pulses. The axis may be at its "
                 "range limit — recenter with GoHome (⊙) and retry."
             )
@@ -285,39 +286,45 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         or the current read-back quantisation before any command was issued."""
         return int(commanded) if commanded is not None else int(fallback)
 
-    def read_xy_nm(self) -> Tuple[float, float]:
-        """Return galvo position from Read() as (x, y) nm."""
+    def read_xy_pulses(self) -> Tuple[float, float]:
+        """Return galvo position from Read() as (x, y) read pulses from centre."""
         self._require_connected()
-        x_nm, y_nm = self._read_xy_nm_relative_to_startup_home()
-        home_x_nm, home_y_nm = self._current_home_xy_nm()
-        return (x_nm - home_x_nm, y_nm - home_y_nm)
+        x_p, y_p = self._read_xy_pulses_relative_to_startup_home()
+        home_x_p, home_y_p = self._current_home_xy_pulses()
+        return (x_p - home_x_p, y_p - home_y_p)
 
-    def set_home(self, x_nm: float | None = None, y_nm: float | None = None) -> Tuple[float, float]:
+    def set_home_pulses(
+        self, x_p: float | None = None, y_p: float | None = None
+    ) -> Tuple[float, float]:
         self._require_connected()
-        if (x_nm is None) != (y_nm is None):
-            raise ValueError("x_nm and y_nm must be provided together.")
-        if x_nm is None or y_nm is None:
-            self._home_x_nm, self._home_y_nm = self._read_xy_nm_relative_to_startup_home()
+        if (x_p is None) != (y_p is None):
+            raise ValueError("x_p and y_p must be provided together.")
+        if x_p is None or y_p is None:
+            self._home_x_p, self._home_y_p = self._read_xy_pulses_relative_to_startup_home()
         else:
-            self._home_x_nm = float(x_nm)
-            self._home_y_nm = float(y_nm)
-        return (self._home_x_nm, self._home_y_nm)
+            self._home_x_p = float(x_p)
+            self._home_y_p = float(y_p)
+        return (self._home_x_p, self._home_y_p)
 
     def goto_center(self) -> None:
         """Move galvo back to the active home position."""
         self._require_connected()
         # Not Galvo.GoHome: it feeds read-unit pulses straight into
         # ctr_goto_xy without the goto-unit conversion (see _GOTO_PER_READ_X).
-        home_x_nm, home_y_nm = self._current_home_xy_nm()
+        # The calibrated centre sits at K*X0 read pulses; add the active home.
+        home_x_p, home_y_p = self._current_home_xy_pulses()
         self._goto_read_units(
-            self._galvo.K * (self._galvo.X0 + home_x_nm),
-            self._galvo.K * (self._galvo.Y0 + home_y_nm),
+            self._galvo.K * self._galvo.X0 + home_x_p,
+            self._galvo.K * self._galvo.Y0 + home_y_p,
         )
 
-    def available_xy_steps_nm(self) -> tuple[float, ...]:
+    def available_xy_steps_pulses(self) -> tuple[float, ...]:
         self._require_connected()
         # A step is usable only if it changes the coarser goto-unit target.
-        return _available_xy_steps_nm(float(self._galvo.K) * _GOTO_PER_READ_X)
+        return _available_xy_steps_pulses(_GOTO_PER_READ_X)
+
+    def pulses_per_nm(self) -> float:
+        return float(self._galvo.K)
 
     # ------------------------------------------------------------------
 
@@ -343,14 +350,16 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._call_gb511("ctr_get_current_xy_pos", *args)
         return (int(x_bit.value), int(y_bit.value))
 
-    def _read_xy_nm_relative_to_startup_home(self) -> Tuple[float, float]:
+    def _read_xy_pulses_relative_to_startup_home(self) -> Tuple[float, float]:
+        # Read pulses relative to the calibrated centre, which sits at K*X0
+        # read pulses (the same linear scale ctr_goto_xy is commanded through).
         xb, yb = self._read_gb511_bits()
-        x_nm = self._galvo.Bit2Pos(xb) - self._galvo.X0
-        y_nm = self._galvo.Bit2Pos(yb) - self._galvo.Y0
-        return (float(x_nm), float(y_nm))
+        x_p = xb - self._galvo.K * self._galvo.X0
+        y_p = yb - self._galvo.K * self._galvo.Y0
+        return (float(x_p), float(y_p))
 
-    def _current_home_xy_nm(self) -> Tuple[float, float]:
-        return (float(getattr(self, "_home_x_nm", 0.0)), float(getattr(self, "_home_y_nm", 0.0)))
+    def _current_home_xy_pulses(self) -> Tuple[float, float]:
+        return (float(getattr(self, "_home_x_p", 0.0)), float(getattr(self, "_home_y_p", 0.0)))
 
     def _goto_read_units(
         self,
@@ -637,11 +646,12 @@ def _resolve_repo_path(path_str: str) -> Path:
     return path if path.is_absolute() else (_REPO_ROOT / path).resolve()
 
 
-def _available_xy_steps_nm(k_bit_per_nm: float) -> tuple[float, ...]:
+def _available_xy_steps_pulses(goto_per_read: float) -> tuple[float, ...]:
+    # A step is usable only if it changes the coarse goto-unit command.
     return tuple(
-        step_nm
-        for step_nm in STANDARD_STEP_OPTIONS_NM
-        if round(abs(step_nm) * k_bit_per_nm) >= 1
+        step_p
+        for step_p in STANDARD_STEP_OPTIONS_PULSES
+        if round(abs(step_p) * goto_per_read) >= 1
     )
 
 
