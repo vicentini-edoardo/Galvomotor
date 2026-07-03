@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMetaObject, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -537,6 +538,8 @@ class MotionPanel(QWidget):
         self._x_label = self._build_motion_readout("--")
         self._y_label = self._build_motion_readout("--")
         self._home_label = self._build_motion_readout("0, 0", home=True)
+        self._home_x_edit = self._build_home_edit("0")
+        self._home_y_edit = self._build_home_edit("0")
         self._btn_set_home = QPushButton("Set Home")
         self._btn_set_home.clicked.connect(self._set_home)
 
@@ -546,6 +549,7 @@ class MotionPanel(QWidget):
         readouts.addWidget(self._build_readout_column("Y live", self._y_label))
         readouts.addSpacing(2)
         readouts.addWidget(self._build_readout_column("Home", self._home_label))
+        readouts.addWidget(self._build_home_editor_row())
         readouts.addWidget(self._btn_set_home, alignment=Qt.AlignmentFlag.AlignLeft)
         readouts.addStretch()
         body.addLayout(readouts, 1)
@@ -617,6 +621,26 @@ class MotionPanel(QWidget):
             label.setProperty("homeReadout", True)
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         return label
+
+    def _build_home_edit(self, text: str) -> QLineEdit:
+        edit = QLineEdit(text)
+        edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        edit.setFixedWidth(72)
+        edit.setValidator(QDoubleValidator(edit))
+        edit.editingFinished.connect(self._apply_home_from_edits)
+        return edit
+
+    def _build_home_editor_row(self) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel("X"))
+        layout.addWidget(self._home_x_edit)
+        layout.addWidget(QLabel("Y"))
+        layout.addWidget(self._home_y_edit)
+        layout.addStretch()
+        return widget
 
     def _build_readout_column(self, title: str, value_label: ReadoutLabel) -> QWidget:
         widget = QWidget()
@@ -775,6 +799,9 @@ class MotionPanel(QWidget):
             btn.setEnabled(enable_z)
         self._xy_step_combo.setEnabled(enable_xy)
         self._z_step_combo.setEnabled(enable_z)
+        home_edit_enabled = not self._locked
+        self._home_x_edit.setEnabled(home_edit_enabled)
+        self._home_y_edit.setEnabled(home_edit_enabled)
 
     def _restore_settings(self) -> None:
         xy_step = self._settings.value("xy_step_nm", "100")
@@ -797,6 +824,29 @@ class MotionPanel(QWidget):
 
     def _update_home_label(self) -> None:
         self._home_label.setText(f"{self._home_x_nm:.0f}, {self._home_y_nm:.0f}")
+        self._home_x_edit.setText(f"{self._home_x_nm:.0f}")
+        self._home_y_edit.setText(f"{self._home_y_nm:.0f}")
+
+    def _apply_home_from_edits(self) -> None:
+        try:
+            home_x_nm = float(self._home_x_edit.text())
+            home_y_nm = float(self._home_y_edit.text())
+        except ValueError:
+            self._update_home_label()
+            return
+
+        self._home_x_nm = home_x_nm
+        self._home_y_nm = home_y_nm
+        if self._backend is not None:
+            try:
+                self._backend.set_home(self._home_x_nm, self._home_y_nm)
+            except Exception as exc:  # noqa: BLE001
+                self.log_message.emit(f"Set home error: {exc}")
+                self._update_home_label()
+                return
+            self._refresh_position()
+        self._update_home_label()
+        self.save_settings()
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self.save_settings()

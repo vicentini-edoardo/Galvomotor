@@ -102,6 +102,31 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
     assert restored._home_label.text() == "250, -125"
 
 
+def test_motion_panel_home_fields_apply_manual_values(qapp: object) -> None:
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    panel = MotionPanel()
+    panel._settings.clear()
+    backend = MockGalvoBackend()
+    backend.connect()
+    backend.move_relative(300.0, -200.0)
+    panel.set_backend(backend)
+
+    panel._home_x_edit.setText("100")
+    panel._home_y_edit.setText("-50")
+    panel._home_x_edit.editingFinished.emit()
+    qapp.processEvents()
+
+    assert panel._home_x_nm == 100.0
+    assert panel._home_y_nm == -50.0
+    assert panel._home_label.text() == "100, -50"
+    assert backend.read_xy_nm() == (200.0, -150.0)
+
+    restored = MotionPanel()
+    assert restored._home_x_edit.text() == "100"
+    assert restored._home_y_edit.text() == "-50"
+
+
 def test_motion_panel_restores_saved_home_on_connect(qapp: object) -> None:
     panel = MotionPanel()
     panel._settings.clear()
