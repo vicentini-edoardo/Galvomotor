@@ -9,7 +9,13 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from galvo_gui.motion.base import GalvoBackend, GalvoError, SnomSample
+from galvo_gui.motion.base import (
+    GalvoBackend,
+    GalvoError,
+    NeaBackend,
+    SnomSample,
+    run_raster_scan,
+)
 
 _N_HARMONICS = 6
 
@@ -19,7 +25,7 @@ class ScanWorker(QThread):
 
     Usage::
 
-        worker = ScanWorker(backend, params)
+        worker = ScanWorker(galvo, nea, params)
         worker.point_done.connect(panel.on_point_done)
         worker.scan_finished.connect(panel.on_scan_finished)
         worker.start()
@@ -43,7 +49,8 @@ class ScanWorker(QThread):
 
     def __init__(
         self,
-        backend: GalvoBackend,
+        galvo: GalvoBackend,
+        nea: NeaBackend,
         dx_nm: float,
         dy_nm: float,
         nb_x: int,
@@ -55,7 +62,8 @@ class ScanWorker(QThread):
         parent: object | None = None,
     ) -> None:
         super().__init__(parent)  # type: ignore[arg-type]
-        self._backend = backend
+        self._galvo = galvo
+        self._nea = nea
         self._dx_nm = dx_nm
         self._dy_nm = dy_nm
         self._nb_x = nb_x
@@ -98,7 +106,9 @@ class ScanWorker(QThread):
                 f"Δx={self._dx_nm:.0f} nm, Δy={self._dy_nm:.0f} nm, "
                 f"twait={self._twait:.2f} s"
             )
-            self._backend.scan(
+            run_raster_scan(
+                self._galvo,
+                self._nea,
                 self._dx_nm,
                 self._dy_nm,
                 self._nb_x,

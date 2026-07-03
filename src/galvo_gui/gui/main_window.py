@@ -160,11 +160,15 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._motion, "Motion")
         self._tabs.addTab(self._scan, "Scan")
 
-        # Wire backend connect/disconnect → motion and scan panels
-        self._connection.backend_connected.connect(self._motion.set_backend)
-        self._connection.backend_connected.connect(self._scan.set_backend)
-        self._connection.backend_disconnected.connect(self._motion.clear_backend)
-        self._connection.backend_disconnected.connect(self._scan.clear_backend)
+        # Wire each connection → motion and scan panels independently
+        self._connection.galvo_connected.connect(self._motion.set_galvo_backend)
+        self._connection.galvo_connected.connect(self._scan.set_galvo_backend)
+        self._connection.galvo_disconnected.connect(self._motion.clear_galvo_backend)
+        self._connection.galvo_disconnected.connect(self._scan.clear_galvo_backend)
+        self._connection.nea_connected.connect(self._motion.set_nea_backend)
+        self._connection.nea_connected.connect(self._scan.set_nea_backend)
+        self._connection.nea_disconnected.connect(self._motion.clear_nea_backend)
+        self._connection.nea_disconnected.connect(self._scan.clear_nea_backend)
 
         # Lock jog controls during scan
         self._scan.running_changed.connect(self._motion.lock_for_scan)
@@ -173,10 +177,15 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar(self)
         self.setStatusBar(self._status_bar)
 
-        self._conn_label = QLabel("● Not connected")
-        self._conn_label.setObjectName("connection_label")
-        self._conn_label.setProperty("connected", "false")
-        self._status_bar.addWidget(self._conn_label)
+        self._nea_conn_label = QLabel("● neaSNOM: off")
+        self._nea_conn_label.setObjectName("connection_label")
+        self._nea_conn_label.setProperty("connected", "false")
+        self._status_bar.addWidget(self._nea_conn_label)
+
+        self._galvo_conn_label = QLabel("● Galvo: off")
+        self._galvo_conn_label.setObjectName("connection_label")
+        self._galvo_conn_label.setProperty("connected", "false")
+        self._status_bar.addWidget(self._galvo_conn_label)
 
         self._scan_label = QLabel("Scan: Idle")
         self._scan_label.setObjectName("acquisition_label")
@@ -197,8 +206,14 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(QLabel("galvo-gui v0.1"), 0)
 
         # Wire status updates
-        self._connection.backend_connected.connect(self._on_connected)
-        self._connection.backend_disconnected.connect(self._on_disconnected)
+        self._connection.nea_connected.connect(lambda _b: self._set_conn_label(
+            self._nea_conn_label, "neaSNOM", True))
+        self._connection.nea_disconnected.connect(lambda: self._set_conn_label(
+            self._nea_conn_label, "neaSNOM", False))
+        self._connection.galvo_connected.connect(lambda _b: self._set_conn_label(
+            self._galvo_conn_label, "Galvo", True))
+        self._connection.galvo_disconnected.connect(lambda: self._set_conn_label(
+            self._galvo_conn_label, "Galvo", False))
         self._scan.running_changed.connect(self._on_scan_running)
         self._connection.log_message.connect(self._status_bar.showMessage)
         self._motion.log_message.connect(self._status_bar.showMessage)
@@ -206,17 +221,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
 
-    def _on_connected(self, _backend: object) -> None:
-        self._conn_label.setText("● Connected")
-        self._conn_label.setProperty("connected", "true")
-        self._conn_label.style().unpolish(self._conn_label)  # type: ignore[union-attr]
-        self._conn_label.style().polish(self._conn_label)    # type: ignore[union-attr]
-
-    def _on_disconnected(self) -> None:
-        self._conn_label.setText("● Not connected")
-        self._conn_label.setProperty("connected", "false")
-        self._conn_label.style().unpolish(self._conn_label)  # type: ignore[union-attr]
-        self._conn_label.style().polish(self._conn_label)    # type: ignore[union-attr]
+    def _set_conn_label(self, label: QLabel, name: str, connected: bool) -> None:
+        label.setText(f"● {name}: {'on' if connected else 'off'}")
+        label.setProperty("connected", "true" if connected else "false")
+        label.style().unpolish(label)  # type: ignore[union-attr]
+        label.style().polish(label)    # type: ignore[union-attr]
 
     def _on_scan_running(self, running: bool) -> None:
         self._scan_label.setText("Scan: Running" if running else "Scan: Idle")

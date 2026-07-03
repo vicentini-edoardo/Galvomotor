@@ -6,8 +6,9 @@ Desktop app for manual jogging and 2-D raster scanning with a galvo laser mirror
 
 - **Manual tab** — cross controller (▲▼◀▶) with configurable step size (nm), live X/Y position readout, go-to-centre button
 - **Scan tab** — configurable 2-D raster scan (size, pixels, step time, integration time), live amplitude/phase image updated pixel-by-pixel, HDF5 save
-- **Mock backend** — runs without any hardware for development and testing
-- **Real backend** — wraps `galvo_functions.Galvo` for galvo control and `nea_tools` / `neaspec` for SNOM optical signal readout
+- **Two independent connections** — the **neaSNOM** (parabolic-mirror Z axis + optical signal) and the **galvomotor** (XY stage) connect and disconnect separately; each enables only its own motion controls
+- **Galvo driver modes** — *Simulated galvo* (no hardware), *GB511 board* (`galvo_functions.Galvo`), or *Canon GC-211/212* (GB511 + RS-232 high-speed)
+- **neaSNOM** — wraps `nea_tools` / `neaspec` for Z motion and optical signal readout (falls back to a simulated neaSNOM when the SDK is absent)
 - Dark research-workstation UI matching [Andor_idus420_Demodulation_gui](https://github.com/your-lab/Andor_idus420_Demodulation_gui)
 
 ## Requirements
@@ -50,11 +51,14 @@ galvo-gui
 
 ## Tabs
 
-### Manual
-Select **Backend** (Mock or Real), enter the **neaSNOM host** and **cal files path**, then click **Connect**. Use the cross controller to jog the galvo; the position readout refreshes at 2 Hz.
+### Connection
+Two separate connections sit side by side. **neaSNOM** takes a host and connects the Z axis + optical signal. **Galvomotor** takes a driver mode (Simulated / GB511 / Canon) plus its cal-files path (and, for Canon, serial port / board index / program file). Each has its own **Connect / Disconnect** button.
+
+### Motion
+The **Galvomotor XY** cross controller (▲▼◀▶) is enabled only while the galvo is connected; the **neaSNOM Z** controls only while neaSNOM is connected. Live readouts refresh at 2 Hz.
 
 ### Scan
-Set scan range (nm), pixel counts, step time, and save location. Click **Start Scan** — the image fills live from left-to-right rasters. Each pixel records 6 optical harmonics (amplitude + phase) via the neaSNOM stream. Results are saved as HDF5 on completion.
+A scan needs **both** connections (galvo for XY motion, neaSNOM for optical readout). Set scan range (nm), pixel counts, step time, and save location, then click **Start Scan** — the image fills live from left-to-right rasters. Each pixel records 6 optical harmonics (amplitude + phase) via the neaSNOM stream. Results are saved as HDF5 on completion.
 
 ## HDF5 output format
 

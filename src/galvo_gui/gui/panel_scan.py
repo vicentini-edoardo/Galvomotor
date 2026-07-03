@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 
 from galvo_gui.gui import theme
 from galvo_gui.gui.widgets import LogView
-from galvo_gui.motion.base import GalvoBackend
+from galvo_gui.motion.base import GalvoBackend, NeaBackend
 from galvo_gui.workers.scan import ScanWorker
 
 _N_HARMONICS = 6
@@ -35,9 +35,9 @@ _N_HARMONICS = 6
 class ScanPanel(QWidget):
     """2-D raster scan panel (Tab 2).
 
-    Receives a backend from ManualPanel via set_backend / clear_backend.
-    Drives a ScanWorker, displays live amplitude/phase images,
-    and saves results to HDF5.
+    Receives a galvo backend (XY motion) and a neaSNOM backend (optical
+    readout) from the Connection tab. A scan needs both. Drives a ScanWorker,
+    displays live amplitude/phase images, and saves results to HDF5.
 
     Signals:
         log_message(str): forwarded to status bar
@@ -49,7 +49,8 @@ class ScanPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._backend: GalvoBackend | None = None
+        self._galvo_backend: GalvoBackend | None = None
+        self._nea_backend: NeaBackend | None = None
         self._worker: ScanWorker | None = None
         self._settings = QSettings("galvo_gui", "ScanPanel")
 
@@ -234,13 +235,28 @@ class ScanPanel(QWidget):
     # Public slots
     # ------------------------------------------------------------------
 
-    def set_backend(self, backend: GalvoBackend) -> None:
-        self._backend = backend
-        self._start_btn.setEnabled(True)
+    def set_galvo_backend(self, backend: GalvoBackend) -> None:
+        self._galvo_backend = backend
+        self._update_start_enabled()
 
-    def clear_backend(self) -> None:
-        self._backend = None
-        self._start_btn.setEnabled(False)
+    def clear_galvo_backend(self) -> None:
+        self._galvo_backend = None
+        self._update_start_enabled()
+
+    def set_nea_backend(self, backend: NeaBackend) -> None:
+        self._nea_backend = backend
+        self._update_start_enabled()
+
+    def clear_nea_backend(self) -> None:
+        self._nea_backend = None
+        self._update_start_enabled()
+
+    def _both_connected(self) -> bool:
+        return self._galvo_backend is not None and self._nea_backend is not None
+
+    def _update_start_enabled(self) -> None:
+        running = self._worker is not None
+        self._start_btn.setEnabled(self._both_connected() and not running)
 
     # ------------------------------------------------------------------
     # Scan control
@@ -253,8 +269,10 @@ class ScanPanel(QWidget):
             self._save_dir.setText(path)
 
     def _start_scan(self) -> None:
-        if self._backend is None:
-            self._log.append_line("ERROR: no backend connected.")
+        if self._galvo_backend is None or self._nea_backend is None:
+            self._log.append_line(
+                "ERROR: a scan needs both the galvo and neaSNOM connected."
+            )
             return
 
         nb_x = self._nb_x.value()
@@ -268,7 +286,8 @@ class ScanPanel(QWidget):
         self._img_item.setImage(np.zeros((nb_x, nb_y), dtype=np.float32))
 
         self._worker = ScanWorker(
-            backend=self._backend,
+            galvo=self._galvo_backend,
+            nea=self._nea_backend,
             dx_nm=self._x_range.value(),
             dy_nm=self._y_range.value(),
             nb_x=nb_x,
@@ -360,7 +379,7 @@ class ScanPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _set_started(self, started: bool) -> None:
-        self._start_btn.setEnabled(not started and self._backend is not None)
+        self._start_btn.setEnabled(not started and self._both_connected())
         self._stop_btn.setEnabled(started)
         if not started:
             self._stop_btn.setText("Stop")
