@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 
 from galvo_gui.gui.widgets import LogView, ReadoutLabel
 from galvo_gui.motion.base import (
-    STANDARD_STEP_OPTIONS_NM,
+    STANDARD_STEP_OPTIONS_PULSES,
     Z_STEP_OPTIONS_NM,
     GalvoBackend,
     NeaBackend,
@@ -602,11 +602,13 @@ class MotionPanel(QWidget):
         self._z_steps_available = False
         self._last_position_error: str | None = None
         self._settings = QSettings("galvo_gui", "MotionPanel")
-        self._home_x_nm = 0.0
-        self._home_y_nm = 0.0
-        self._origin_x_nm = 0.0
-        self._origin_y_nm = 0.0
-        self._xy_units = "nm"
+        # Galvo state is kept in the hardware's native unit — encoder pulses.
+        # nm only ever appears as a display conversion, never re-fed to a move.
+        self._home_x_p = 0.0
+        self._home_y_p = 0.0
+        self._origin_x_p = 0.0
+        self._origin_y_p = 0.0
+        self._xy_units = "pulses"
         self._build_ui()
         self._restore_settings()
 
@@ -650,13 +652,13 @@ class MotionPanel(QWidget):
         title.setObjectName("MotionClusterTitle")
         header.addWidget(title)
         header.addStretch()
-        self._xy_step_label = QLabel("Step (nm)")
+        self._xy_step_label = QLabel("Step (pulses)")
         self._xy_step_label.setObjectName("MotionInlineLabel")
         header.addWidget(self._xy_step_label)
-        self._xy_step_combo = self._build_step_combo(STANDARD_STEP_OPTIONS_NM, "100")
+        self._xy_step_combo = self._build_step_combo(STANDARD_STEP_OPTIONS_PULSES, "100")
         header.addWidget(self._xy_step_combo)
         self._xy_units_combo = QComboBox()
-        self._xy_units_combo.addItems(["nm", "pulses"])
+        self._xy_units_combo.addItems(["pulses", "nm"])
         self._xy_units_combo.currentTextChanged.connect(self._set_xy_units)
         header.addWidget(self._xy_units_combo)
         self._menu_button = self._build_motion_menu_button()
@@ -834,77 +836,81 @@ class MotionPanel(QWidget):
         return button
 
     # ------------------------------------------------------------------
-    # Coordinate helpers (XY / galvo)
+    # Coordinate helpers (XY / galvo) — canonical unit is encoder pulses.
+    # nm appears only as a display conversion (via pulses_per_nm) and is
+    # never fed back into a move, so a command never round-trips through nm.
     # ------------------------------------------------------------------
 
-    def _backend_home_xy_nm(self) -> tuple[float, float]:
-        return (self._origin_x_nm + self._home_x_nm, self._origin_y_nm + self._home_y_nm)
+    def _backend_home_xy_pulses(self) -> tuple[float, float]:
+        return (self._origin_x_p + self._home_x_p, self._origin_y_p + self._home_y_p)
 
-    def _xy_pulses_per_nm(self) -> float:
-        galvo = getattr(self._galvo_backend, "_galvo", None)
-        k = getattr(galvo, "K", None)
+    def _pulses_per_nm(self) -> float:
+        backend = self._galvo_backend
+        if backend is None:
+            return 1.0
         try:
-            scale = float(k)
-        except (TypeError, ValueError):
+            scale = float(backend.pulses_per_nm())
+        except (TypeError, ValueError, AttributeError):
             return 1.0
         return scale if scale > 0 else 1.0
 
-    def _xy_to_display(self, value_nm: float) -> float:
-        if self._xy_units == "pulses":
-            return value_nm * self._xy_pulses_per_nm()
-        return value_nm
+    def _xy_to_display(self, value_p: float) -> float:
+        # Pulses are canonical; nm is a display-only division by K.
+        if self._xy_units == "nm":
+            return value_p / self._pulses_per_nm()
+        return value_p
 
     def _xy_from_display(self, value: float) -> float:
-        if self._xy_units == "pulses":
-            return value / self._xy_pulses_per_nm()
+        if self._xy_units == "nm":
+            return value * self._pulses_per_nm()
         return value
 
-    def _format_xy_value(self, value_nm: float) -> str:
-        return f"{self._xy_to_display(value_nm):.0f}"
+    def _format_xy_value(self, value_p: float) -> str:
+        return f"{self._xy_to_display(value_p):.0f}"
 
-    def _set_combo_value(self, combo: QComboBox, value_nm: float) -> None:
+    def _set_combo_value(self, combo: QComboBox, value: float) -> None:
         for idx in range(combo.count()):
-            if float(combo.itemData(idx)) == float(value_nm):
+            if float(combo.itemData(idx)) == float(value):
                 combo.setCurrentIndex(idx)
                 return
 
     def _sync_xy_step_combo_labels(self) -> None:
-        current_step_nm = float(self._xy_step_combo.currentData())
+        current_step_p = float(self._xy_step_combo.currentData())
         for idx in range(self._xy_step_combo.count()):
-            step_nm = float(self._xy_step_combo.itemData(idx))
-            self._xy_step_combo.setItemText(idx, f"{self._xy_to_display(step_nm):g}")
-        self._set_combo_value(self._xy_step_combo, current_step_nm)
+            step_p = float(self._xy_step_combo.itemData(idx))
+            self._xy_step_combo.setItemText(idx, f"{self._xy_to_display(step_p):g}")
+        self._set_combo_value(self._xy_step_combo, current_step_p)
         self._xy_step_label.setText(f"Step ({self._xy_units})")
 
-    def _sync_xy_target_edits(self, x_nm: float | None = None, y_nm: float | None = None) -> None:
-        x_nm = 0.0 if x_nm is None else x_nm
-        y_nm = 0.0 if y_nm is None else y_nm
-        self._goto_x_edit.setText(self._format_xy_value(x_nm))
-        self._goto_y_edit.setText(self._format_xy_value(y_nm))
+    def _sync_xy_target_edits(self, x_p: float | None = None, y_p: float | None = None) -> None:
+        x_p = 0.0 if x_p is None else x_p
+        y_p = 0.0 if y_p is None else y_p
+        self._goto_x_edit.setText(self._format_xy_value(x_p))
+        self._goto_y_edit.setText(self._format_xy_value(y_p))
 
     def _set_xy_units(self, units: str) -> None:
         if units not in {"nm", "pulses"} or units == self._xy_units:
             return
-        target_x_nm = self._xy_from_display(float(self._goto_x_edit.text() or 0.0))
-        target_y_nm = self._xy_from_display(float(self._goto_y_edit.text() or 0.0))
+        target_x_p = self._xy_from_display(float(self._goto_x_edit.text() or 0.0))
+        target_y_p = self._xy_from_display(float(self._goto_y_edit.text() or 0.0))
         self._xy_units = units
         self._sync_xy_step_combo_labels()
         self._update_home_label()
-        self._sync_xy_target_edits(target_x_nm, target_y_nm)
+        self._sync_xy_target_edits(target_x_p, target_y_p)
         self._refresh_position()
         self.save_settings()
 
-    def _current_xy_from_origin_nm(self) -> tuple[float, float]:
+    def _current_xy_from_origin_pulses(self) -> tuple[float, float]:
         if self._galvo_backend is None:
-            return (self._home_x_nm, self._home_y_nm)
-        x_rel_home_nm, y_rel_home_nm = self._galvo_backend.read_xy_nm()
-        return (x_rel_home_nm + self._home_x_nm, y_rel_home_nm + self._home_y_nm)
+            return (self._home_x_p, self._home_y_p)
+        x_rel_home_p, y_rel_home_p = self._galvo_backend.read_xy_pulses()
+        return (x_rel_home_p + self._home_x_p, y_rel_home_p + self._home_y_p)
 
     def _apply_backend_home(self) -> None:
         if self._galvo_backend is None:
             return
-        backend_home_x_nm, backend_home_y_nm = self._backend_home_xy_nm()
-        self._galvo_backend.set_home(backend_home_x_nm, backend_home_y_nm)
+        backend_home_x_p, backend_home_y_p = self._backend_home_xy_pulses()
+        self._galvo_backend.set_home_pulses(backend_home_x_p, backend_home_y_p)
 
     # ------------------------------------------------------------------
     # Backend wiring
@@ -964,9 +970,9 @@ class MotionPanel(QWidget):
     def _jog_xy(self, sign_x: int, sign_y: int) -> None:
         if self._galvo_backend is None:
             return
-        step_nm = float(self._xy_step_combo.currentData())
+        step_p = float(self._xy_step_combo.currentData())
         try:
-            self._galvo_backend.move_relative(sign_x * step_nm, sign_y * step_nm)
+            self._galvo_backend.move_relative_pulses(sign_x * step_p, sign_y * step_p)
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Move error: {exc}")
@@ -994,13 +1000,13 @@ class MotionPanel(QWidget):
         if self._galvo_backend is None:
             return
         try:
-            self._home_x_nm, self._home_y_nm = self._current_xy_from_origin_nm()
-            self._galvo_backend.set_home(*self._backend_home_xy_nm())
+            self._home_x_p, self._home_y_p = self._current_xy_from_origin_pulses()
+            self._galvo_backend.set_home_pulses(*self._backend_home_xy_pulses())
             self._update_home_label()
             self.save_settings()
             self._refresh_position()
             self.log_message.emit(
-                f"Home set to ({self._home_x_nm:.0f}, {self._home_y_nm:.0f}) nm"
+                f"Home set to ({self._home_x_p:.0f}, {self._home_y_p:.0f}) pulses"
             )
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Set home error: {exc}")
@@ -1009,14 +1015,14 @@ class MotionPanel(QWidget):
         if self._galvo_backend is None:
             return
         try:
-            target_x_nm = self._xy_from_display(float(self._goto_x_edit.text()))
-            target_y_nm = self._xy_from_display(float(self._goto_y_edit.text()))
+            target_x_p = self._xy_from_display(float(self._goto_x_edit.text()))
+            target_y_p = self._xy_from_display(float(self._goto_y_edit.text()))
         except ValueError:
             return
         try:
-            current_x_nm, current_y_nm = self._current_xy_from_origin_nm()
-            self._galvo_backend.move_relative(
-                target_x_nm - current_x_nm, target_y_nm - current_y_nm
+            current_x_p, current_y_p = self._current_xy_from_origin_pulses()
+            self._galvo_backend.move_relative_pulses(
+                target_x_p - current_x_p, target_y_p - current_y_p
             )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001
@@ -1026,17 +1032,17 @@ class MotionPanel(QWidget):
         if self._galvo_backend is None:
             return
         try:
-            current_x_nm, current_y_nm = self._current_xy_from_origin_nm()
-            self._origin_x_nm += current_x_nm
-            self._origin_y_nm += current_y_nm
-            self._home_x_nm -= current_x_nm
-            self._home_y_nm -= current_y_nm
+            current_x_p, current_y_p = self._current_xy_from_origin_pulses()
+            self._origin_x_p += current_x_p
+            self._origin_y_p += current_y_p
+            self._home_x_p -= current_x_p
+            self._home_y_p -= current_y_p
             self._apply_backend_home()
             self._update_home_label()
             self.save_settings()
             self._refresh_position()
             self.log_message.emit(
-                f"Origin set to ({self._origin_x_nm:.0f}, {self._origin_y_nm:.0f}) nm"
+                f"Origin set to ({self._origin_x_p:.0f}, {self._origin_y_p:.0f}) pulses"
             )
         except Exception as exc:  # noqa: BLE001
             self.log_message.emit(f"Set origin error: {exc}")
@@ -1044,13 +1050,13 @@ class MotionPanel(QWidget):
     def _refresh_position(self) -> None:
         if self._galvo_connected():
             try:
-                x_nm, y_nm = self._current_xy_from_origin_nm()
+                x_p, y_p = self._current_xy_from_origin_pulses()
             except Exception as exc:  # noqa: BLE001
                 self._report_position_error(f"Position read error: {exc}")
             else:
                 self._last_position_error = None
-                self._x_label.setText(self._format_xy_value(x_nm))
-                self._y_label.setText(self._format_xy_value(y_nm))
+                self._x_label.setText(self._format_xy_value(x_p))
+                self._y_label.setText(self._format_xy_value(y_p))
         if self._nea_connected():
             try:
                 z_nm = self._nea_backend.read_z_nm()  # type: ignore[union-attr]
@@ -1076,7 +1082,7 @@ class MotionPanel(QWidget):
             self._xy_steps_available = False
             self._apply_xy_enabled()
             return
-        xy_steps = self._galvo_backend.available_xy_steps_nm()  # type: ignore[union-attr]
+        xy_steps = self._galvo_backend.available_xy_steps_pulses()  # type: ignore[union-attr]
         self._set_combo_item_enabled(self._xy_step_combo, xy_steps)
         self._ensure_combo_selection(self._xy_step_combo, xy_steps)
         self._xy_steps_available = bool(xy_steps)
@@ -1146,9 +1152,9 @@ class MotionPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _restore_settings(self) -> None:
-        xy_step = self._settings.value("xy_step_nm", "100")
+        xy_step = self._settings.value("xy_step_pulses", "100")
         z_step = self._settings.value("z_step_nm", "1000")
-        xy_units = self._settings.value("xy_units", "nm")
+        xy_units = self._settings.value("xy_units", "pulses")
         with contextlib.suppress(Exception):
             self._set_combo_value(self._xy_step_combo, float(xy_step))
         if isinstance(z_step, str):
@@ -1157,29 +1163,29 @@ class MotionPanel(QWidget):
             self._xy_units = xy_units
             self._xy_units_combo.setCurrentText(xy_units)
         with contextlib.suppress(Exception):
-            self._home_x_nm = float(self._settings.value("home_x_nm", 0.0))
+            self._home_x_p = float(self._settings.value("home_x_pulses", 0.0))
         with contextlib.suppress(Exception):
-            self._home_y_nm = float(self._settings.value("home_y_nm", 0.0))
+            self._home_y_p = float(self._settings.value("home_y_pulses", 0.0))
         with contextlib.suppress(Exception):
-            self._origin_x_nm = float(self._settings.value("origin_x_nm", 0.0))
+            self._origin_x_p = float(self._settings.value("origin_x_pulses", 0.0))
         with contextlib.suppress(Exception):
-            self._origin_y_nm = float(self._settings.value("origin_y_nm", 0.0))
+            self._origin_y_p = float(self._settings.value("origin_y_pulses", 0.0))
         self._sync_xy_step_combo_labels()
         self._sync_xy_target_edits()
         self._update_home_label()
 
     def save_settings(self) -> None:
-        self._settings.setValue("xy_step_nm", self._xy_step_combo.currentData())
+        self._settings.setValue("xy_step_pulses", self._xy_step_combo.currentData())
         self._settings.setValue("z_step_nm", self._z_step_combo.currentText())
         self._settings.setValue("xy_units", self._xy_units)
-        self._settings.setValue("home_x_nm", self._home_x_nm)
-        self._settings.setValue("home_y_nm", self._home_y_nm)
-        self._settings.setValue("origin_x_nm", self._origin_x_nm)
-        self._settings.setValue("origin_y_nm", self._origin_y_nm)
+        self._settings.setValue("home_x_pulses", self._home_x_p)
+        self._settings.setValue("home_y_pulses", self._home_y_p)
+        self._settings.setValue("origin_x_pulses", self._origin_x_p)
+        self._settings.setValue("origin_y_pulses", self._origin_y_p)
 
     def _update_home_label(self) -> None:
         self._home_label.setText(
-            f"{self._format_xy_value(self._home_x_nm)}, {self._format_xy_value(self._home_y_nm)}"
+            f"{self._format_xy_value(self._home_x_p)}, {self._format_xy_value(self._home_y_p)}"
         )
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]

@@ -218,15 +218,20 @@ def test_set_home_redefines_origin_and_goto_center() -> None:
 
 
 def test_available_xy_steps_require_a_full_goto_unit() -> None:
-    """Steps below the goto-unit resolution (~5 nm at K=1.79) are unusable."""
+    """Pulse steps below the goto-unit resolution (~9 read pulses) are unusable."""
 
     backend = _make_galvo(galvo=_FakeGalvo())
 
-    assert backend.available_xy_steps_nm() == (50.0, 100.0, 500.0, 1000.0)
+    assert backend.available_xy_steps_pulses() == (10.0, 100.0, 1000.0, 10000.0)
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:
-    assert galvo_nea._available_xy_steps_nm(1.79) == (50.0, 100.0, 500.0, 1000.0)
+    assert galvo_nea._available_xy_steps_pulses(galvo_nea._GOTO_PER_READ_X) == (
+        10.0,
+        100.0,
+        1000.0,
+        10000.0,
+    )
 
 
 def test_read_gb511_bits_passes_byref_to_raw_dll_handles(monkeypatch) -> None:
