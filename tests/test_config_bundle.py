@@ -59,6 +59,37 @@ class _FakeWrapper:
             self._x_bit = min(self._x_bit, self._clamp_x_to)
 
 
+class _DelayedFollowWrapper(_FakeWrapper):
+    """First read after a command still shows the old-ish position, then catches up."""
+
+    def __init__(self, x_first_read_bias: int = -112) -> None:
+        super().__init__()
+        self._x_first_read_bias = x_first_read_bias
+        self._pending_x_bit: int | None = None
+        self._pending_y_bit: int | None = None
+        self._lag_reads_remaining = 0
+
+    def ctr_goto_xy(self, gx: int, gy: int) -> None:
+        self.goto_calls.append((gx, gy))
+        self._pending_x_bit = math.floor(gx / _CX)
+        self._pending_y_bit = math.floor(gy / _CX)
+        self._lag_reads_remaining = 1
+
+    def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
+        if self._lag_reads_remaining > 0 and self._pending_x_bit is not None:
+            x.value = self._pending_x_bit + self._x_first_read_bias  # type: ignore[attr-defined]
+            y.value = self._pending_y_bit  # type: ignore[attr-defined]
+            self._lag_reads_remaining -= 1
+            return
+        if self._pending_x_bit is not None:
+            self._x_bit = self._pending_x_bit
+            self._y_bit = self._pending_y_bit if self._pending_y_bit is not None else self._y_bit
+            self._pending_x_bit = None
+            self._pending_y_bit = None
+        x.value = self._x_bit  # type: ignore[attr-defined]
+        y.value = self._y_bit  # type: ignore[attr-defined]
+
+
 class _FakeGalvo:
     """galvo_functions.Galvo stand-in: only calibration values are used."""
 
@@ -207,6 +238,15 @@ def test_move_relative_accepts_small_x_readback_quantisation_error(monkeypatch) 
     backend = _make_galvo(_FakeWrapper(x_after_bias=-5), _FakeGalvo())
 
     backend.move_relative(100.0, 0.0)
+
+
+def test_move_relative_waits_for_delayed_x_follow(monkeypatch) -> None:
+    """A move should tolerate one stale readback sample if the next read catches up."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    backend = _make_galvo(_DelayedFollowWrapper(), _FakeGalvo())
+
+    backend.move_relative(1000.0, 0.0)
 
 
 def test_move_relative_skips_readback_below_goto_resolution(monkeypatch) -> None:

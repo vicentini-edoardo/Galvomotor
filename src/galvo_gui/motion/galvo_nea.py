@@ -61,6 +61,8 @@ _N_HARMONICS = 6
 # Give the galvo time to act on a move before the read-back that detects
 # silently dropped moves (galvo settling is sub-ms; this covers DLL latency).
 _MOVE_SETTLE_S = 0.05
+_MOVE_FOLLOW_TIMEOUT_S = 0.25
+_MOVE_FOLLOW_POLL_S = 0.02
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
 # fine "read" pulses, while ctr_goto_xy expects coarser command units.  The
@@ -273,7 +275,12 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
 
         self._command_goto(gx_target, gy_target)
         time.sleep(_MOVE_SETTLE_S)
-        xb_after, yb_after = self._read_gb511_bits()
+        xb_after, yb_after = self._wait_for_axis_follow(
+            dx_p,
+            dy_p,
+            xb_before + dx_p,
+            yb_before + dy_p,
+        )
         if (xb_after, yb_after) == (xb_before, yb_before):
             raise GalvoError(
                 f"Galvo move ({dx_p:g}, {dy_p:g}) pulses produced no motion: read-back "
@@ -288,6 +295,26 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
             xb_after,
             yb_after,
         )
+
+    def _wait_for_axis_follow(
+        self,
+        dx_p: float,
+        dy_p: float,
+        x_target_p: float,
+        y_target_p: float,
+    ) -> Tuple[int, int]:
+        deadline = time.monotonic() + _MOVE_FOLLOW_TIMEOUT_S
+        last = self._read_gb511_bits()
+        while True:
+            try:
+                self._validate_axis_follow(dx_p, dy_p, x_target_p, y_target_p, *last)
+            except GalvoError:
+                if time.monotonic() >= deadline:
+                    return last
+                time.sleep(_MOVE_FOLLOW_POLL_S)
+                last = self._read_gb511_bits()
+                continue
+            return last
 
     @staticmethod
     def _parked_goto(commanded: int | None, fallback: int) -> int:
