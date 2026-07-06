@@ -987,6 +987,7 @@ class MotionPanel(QWidget):
         if self._galvo_backend is None:
             return
         step_p = float(self._xy_step_combo.currentData())
+        before_x_p = before_y_p = 0.0
         try:
             before_x_p, before_y_p = self._current_xy_from_origin_pulses()
             self._galvo_backend.move_relative_pulses(sign_x * step_p, sign_y * step_p)
@@ -1002,6 +1003,14 @@ class MotionPanel(QWidget):
             )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
+            self._log_xy_move_error(
+                "jog",
+                sign_x * step_p,
+                sign_y * step_p,
+                before_x_p,
+                before_y_p,
+                str(exc),
+            )
             self.log_message.emit(f"Move error: {exc}")
 
     def _jog_z(self, sign_z: int) -> None:
@@ -1017,6 +1026,7 @@ class MotionPanel(QWidget):
     def _goto_center(self) -> None:
         if self._galvo_backend is None:
             return
+        before_x_p = before_y_p = 0.0
         try:
             before_x_p, before_y_p = self._current_xy_from_origin_pulses()
             self._galvo_backend.goto_center()
@@ -1032,6 +1042,14 @@ class MotionPanel(QWidget):
             )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
+            self._log_xy_move_error(
+                "center",
+                0.0,
+                0.0,
+                before_x_p,
+                before_y_p,
+                str(exc),
+            )
             self.log_message.emit(f"Center error: {exc}")
 
     def _set_home(self) -> None:
@@ -1057,6 +1075,8 @@ class MotionPanel(QWidget):
             target_y_p = self._xy_from_display(float(self._goto_y_edit.text()))
         except ValueError:
             return
+        current_x_p = current_y_p = 0.0
+        dx_p = dy_p = 0.0
         try:
             current_x_p, current_y_p = self._current_xy_from_origin_pulses()
             dx_p = target_x_p - current_x_p
@@ -1074,6 +1094,14 @@ class MotionPanel(QWidget):
             )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001
+            self._log_xy_move_error(
+                "goto",
+                dx_p,
+                dy_p,
+                current_x_p,
+                current_y_p,
+                str(exc),
+            )
             self.log_message.emit(f"Go to error: {exc}")
 
     def _set_origin(self) -> None:
@@ -1134,9 +1162,26 @@ class MotionPanel(QWidget):
         direction = self._format_xy_direction(dx_p, dy_p)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         _append_move_history(
-            f"{stamp} kind={kind} step=({dx_p:.0f},{dy_p:.0f}) pulses "
+            f"{stamp} kind={kind} status=ok step=({dx_p:.0f},{dy_p:.0f}) pulses "
             f"direction={direction} before=({before_x_p:.0f},{before_y_p:.0f}) "
             f"after=({after_x_p:.0f},{after_y_p:.0f})"
+        )
+
+    def _log_xy_move_error(
+        self,
+        kind: str,
+        dx_p: float,
+        dy_p: float,
+        before_x_p: float,
+        before_y_p: float,
+        error: str,
+    ) -> None:
+        direction = self._format_xy_direction(dx_p, dy_p)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _append_move_history(
+            f"{stamp} kind={kind} status=error step=({dx_p:.0f},{dy_p:.0f}) pulses "
+            f"direction={direction} before=({before_x_p:.0f},{before_y_p:.0f}) "
+            f'error="{error}"'
         )
 
     @staticmethod

@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import ctypes
 import inspect
+import math
 import os
 import sys
 import time
@@ -282,8 +283,8 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._validate_axis_follow(
             dx_p,
             dy_p,
-            gx_target,
-            gy_target,
+            xb_before + dx_p,
+            yb_before + dy_p,
             xb_after,
             yb_after,
         )
@@ -370,23 +371,23 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self,
         dx_p: float,
         dy_p: float,
-        gx_target: int,
-        gy_target: int,
+        x_target_p: float,
+        y_target_p: float,
         xb_after: int,
         yb_after: int,
     ) -> None:
-        achieved_gx = round(_GOTO_PER_READ_X * xb_after)
-        achieved_gy = round(_GOTO_PER_READ_Y * yb_after)
-        if dx_p and achieved_gx != gx_target:
+        x_tol_p = _axis_follow_tolerance_pulses(_GOTO_PER_READ_X)
+        y_tol_p = _axis_follow_tolerance_pulses(_GOTO_PER_READ_Y)
+        if dx_p and abs(xb_after - x_target_p) > x_tol_p:
             raise GalvoError(
                 f"X axis read-back missed the commanded pulse target: requested "
-                f"goto {gx_target}, read back {achieved_gx}. The axis may be at its "
+                f"{x_target_p:.0f} pulses, read back {xb_after}. The axis may be at its "
                 "movement boundary — recenter with GoHome (⊙) and retry."
             )
-        if dy_p and achieved_gy != gy_target:
+        if dy_p and abs(yb_after - y_target_p) > y_tol_p:
             raise GalvoError(
                 f"Y axis read-back missed the commanded pulse target: requested "
-                f"goto {gy_target}, read back {achieved_gy}. The axis may be at its "
+                f"{y_target_p:.0f} pulses, read back {yb_after}. The axis may be at its "
                 "movement boundary — recenter with GoHome (⊙) and retry."
             )
 
@@ -685,6 +686,11 @@ def _available_xy_steps_pulses(goto_per_read: float) -> tuple[float, ...]:
         for step_p in STANDARD_STEP_OPTIONS_PULSES
         if round(abs(step_p) * goto_per_read) >= 1
     )
+
+
+def _axis_follow_tolerance_pulses(goto_per_read: float) -> int:
+    # Half a coarse goto-unit is normal read-back quantisation/noise, not a failed move.
+    return max(1, math.ceil(0.5 / goto_per_read))
 
 
 @contextlib.contextmanager

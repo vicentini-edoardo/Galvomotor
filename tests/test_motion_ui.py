@@ -205,12 +205,40 @@ def test_motion_panel_writes_xy_move_history_file_and_keeps_last_100(
 
     assert len(lines) == 100
     assert "kind=jog" in lines[-1]
+    assert "status=ok" in lines[-1]
     assert "direction=right" in lines[-1]
     assert "step=(100,0) pulses" in lines[-1]
     assert "before=(100,0)" in lines[0]
     assert "after=(200,0)" in lines[0]
     assert "after=(10100,0)" in lines[-1]
     assert backend.read_xy_pulses() == (10100.0, 0.0)
+
+
+def test_motion_panel_logs_xy_move_errors_to_file(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from galvo_gui.motion.base import GalvoError
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    panel = MotionPanel()
+    backend = MockGalvoBackend()
+    backend.connect()
+    panel.set_galvo_backend(backend)
+    log_path = tmp_path / "move_history.log"
+    monkeypatch.setattr(panel_manual, "_MOVE_LOG_PATH", log_path)
+    monkeypatch.setattr(
+        backend,
+        "move_relative_pulses",
+        lambda dx, dy: (_ for _ in ()).throw(GalvoError("test move failed")),
+    )
+
+    panel._jog_xy(1, 0)
+
+    line = log_path.read_text(encoding="utf-8").splitlines()[-1]
+    assert "kind=jog" in line
+    assert "status=error" in line
+    assert "step=(100,0) pulses" in line
+    assert 'error="test move failed"' in line
 
 
 def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -> None:

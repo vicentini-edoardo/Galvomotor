@@ -30,12 +30,19 @@ class _FakeWrapper:
     pulse count quantises downward, the worst case for the read→goto
     conversion (the encoder never reports a fraction of a pulse)."""
 
-    def __init__(self, drop_moves: bool = False, *, clamp_x_to: int | None = None) -> None:
+    def __init__(
+        self,
+        drop_moves: bool = False,
+        *,
+        clamp_x_to: int | None = None,
+        x_after_bias: int = 0,
+    ) -> None:
         self._x_bit = 1000
         self._y_bit = 2000
         self.goto_calls: list[tuple[int, int]] = []
         self._drop_moves = drop_moves
         self._clamp_x_to = clamp_x_to
+        self._x_after_bias = x_after_bias
 
     def ctr_get_current_xy_pos(self, x: object, y: object) -> None:
         x.value = self._x_bit  # type: ignore[attr-defined]
@@ -47,6 +54,7 @@ class _FakeWrapper:
             return  # axis railed at its limit: command has no effect
         self._x_bit = math.floor(gx / _CX)
         self._y_bit = math.floor(gy / _CX)
+        self._x_bit += self._x_after_bias
         if self._clamp_x_to is not None:
             self._x_bit = min(self._x_bit, self._clamp_x_to)
 
@@ -190,6 +198,15 @@ def test_move_relative_raises_when_x_readback_misses_commanded_target(monkeypatc
 
     with pytest.raises(GalvoError, match="X axis read-back"):
         backend.move_relative(200.0, 0.0)
+
+
+def test_move_relative_accepts_small_x_readback_quantisation_error(monkeypatch) -> None:
+    """A small pulse miss within half a goto-unit is normal read-back quantisation."""
+
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    backend = _make_galvo(_FakeWrapper(x_after_bias=-5), _FakeGalvo())
+
+    backend.move_relative(100.0, 0.0)
 
 
 def test_move_relative_skips_readback_below_goto_resolution(monkeypatch) -> None:
