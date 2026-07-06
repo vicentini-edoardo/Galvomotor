@@ -307,15 +307,16 @@ def test_available_xy_steps_require_a_full_goto_unit() -> None:
 
     backend = _make_galvo(galvo=_FakeGalvo())
 
-    assert backend.available_xy_steps_pulses() == (10.0, 100.0, 1000.0, 10000.0)
+    assert backend.available_xy_steps_pulses() == (10.0, 50.0, 100.0, 500.0, 1000.0)
 
 
 def test_available_xy_steps_disable_sub_resolution_moves() -> None:
     assert galvo_nea._available_xy_steps_pulses(galvo_nea._GOTO_PER_READ_X) == (
         10.0,
+        50.0,
         100.0,
+        500.0,
         1000.0,
-        10000.0,
     )
 
 

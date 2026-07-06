@@ -23,7 +23,7 @@ _N_HARMONICS = 6
 # The galvomotor is commanded and read in encoder pulses — its native unit.
 # Manual XY control works directly in pulses so a jog never round-trips
 # through nm (pulse → nm → pulse), which is both lossy and pointless.
-STANDARD_STEP_OPTIONS_PULSES = (1.0, 10.0, 100.0, 1000.0, 10000.0)
+STANDARD_STEP_OPTIONS_PULSES = (10.0, 50.0, 100.0, 500.0, 1000.0)
 # The parabolic-mirror Z axis needs far coarser jogs than the galvo: the lab
 # notebooks step it in ~1000 nm increments, and sub-100 nm requests are within
 # the positioner's deadband.

@@ -59,7 +59,7 @@ def test_set_home_redefines_origin_and_goto_center() -> None:
 def test_available_xy_steps() -> None:
     b = MockGalvoBackend()
     b.connect()
-    assert b.available_xy_steps_pulses() == (1.0, 10.0, 100.0, 1000.0, 10000.0)
+    assert b.available_xy_steps_pulses() == (10.0, 50.0, 100.0, 500.0, 1000.0)
 
 
 def test_move_relative_pulses_accumulates() -> None:

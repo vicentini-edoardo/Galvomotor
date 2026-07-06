@@ -60,11 +60,11 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     assert any(label.text() == "neaSNOM Z" for label in panel.findChildren(QLabel))
     # The galvo is controlled in encoder pulses (its native unit).
     assert [panel._xy_step_combo.itemText(i) for i in range(panel._xy_step_combo.count())] == [
-        "1",
         "10",
+        "50",
         "100",
+        "500",
         "1000",
-        "10000",
     ]
     assert [panel._z_step_combo.itemText(i) for i in range(panel._z_step_combo.count())] == [
         "10",
