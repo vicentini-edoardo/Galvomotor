@@ -151,6 +151,7 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._cmd_gy: int | None = None
         self._status_callback: Callable[[str], None] | None = None
         self._backend_label = "Galvo"
+        self._last_move_diag: dict[str, int | float] = {}
 
     # ------------------------------------------------------------------
     # Connection
@@ -266,11 +267,37 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
             gy_target = round(_GOTO_PER_READ_Y * (yb_before + dy_p))
         else:
             gy_target = self._parked_goto(getattr(self, "_cmd_gy", None), gy_cur)
+        cmd_gx_before = getattr(self, "_cmd_gx", None)
+        cmd_gy_before = getattr(self, "_cmd_gy", None)
+        self._last_move_diag = {
+            "requested_step_x": dx_p,
+            "requested_step_y": dy_p,
+            "before_x_read": xb_before,
+            "before_y_read": yb_before,
+            "target_x_read": xb_before + dx_p,
+            "target_y_read": yb_before + dy_p,
+            "target_x_goto": gx_target,
+            "target_y_goto": gy_target,
+            "last_cmd_gx_before": gx_cur if cmd_gx_before is None else cmd_gx_before,
+            "last_cmd_gy_before": gy_cur if cmd_gy_before is None else cmd_gy_before,
+            "cmd_gx_sent": gx_target,
+            "cmd_gy_sent": gy_target,
+        }
 
         if (gx_target, gy_target) == (gx_cur, gy_cur):
             # The requested move quantises onto the current position: no motion
             # can be expected, but remember the (unchanged) command anyway.
             self._cmd_gx, self._cmd_gy = gx_target, gy_target
+            self._last_move_diag.update(
+                {
+                    "after_x_read": xb_before,
+                    "after_y_read": yb_before,
+                    "after_x_goto_equiv": gx_cur,
+                    "after_y_goto_equiv": gy_cur,
+                    "x_error_pulses": xb_before - (xb_before + dx_p),
+                    "y_error_pulses": yb_before - (yb_before + dy_p),
+                }
+            )
             return
 
         self._command_goto(gx_target, gy_target)
@@ -282,11 +309,23 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
             yb_before + dy_p,
         )
         if (xb_after, yb_after) == (xb_before, yb_before):
+            self._record_move_follow_diag(
+                xb_after,
+                yb_after,
+                x_target_p=xb_before + dx_p,
+                y_target_p=yb_before + dy_p,
+            )
             raise GalvoError(
                 f"Galvo move ({dx_p:g}, {dy_p:g}) pulses produced no motion: read-back "
                 f"stayed at ({xb_before}, {yb_before}) pulses. The axis may be at its "
                 "range limit — recenter with GoHome (⊙) and retry."
             )
+        self._record_move_follow_diag(
+            xb_after,
+            yb_after,
+            x_target_p=xb_before + dx_p,
+            y_target_p=yb_before + dy_p,
+        )
         self._validate_axis_follow(
             dx_p,
             dy_p,
@@ -328,6 +367,9 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         x_p, y_p = self._read_xy_pulses_relative_to_startup_home()
         home_x_p, home_y_p = self._current_home_xy_pulses()
         return (x_p - home_x_p, y_p - home_y_p)
+
+    def last_move_diagnostics(self) -> dict[str, int | float]:
+        return dict(self._last_move_diag)
 
     def set_home_pulses(
         self, x_p: float | None = None, y_p: float | None = None
@@ -420,6 +462,25 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
 
     def _current_home_xy_pulses(self) -> Tuple[float, float]:
         return (float(getattr(self, "_home_x_p", 0.0)), float(getattr(self, "_home_y_p", 0.0)))
+
+    def _record_move_follow_diag(
+        self,
+        xb_after: int,
+        yb_after: int,
+        *,
+        x_target_p: float,
+        y_target_p: float,
+    ) -> None:
+        self._last_move_diag.update(
+            {
+                "after_x_read": xb_after,
+                "after_y_read": yb_after,
+                "after_x_goto_equiv": round(_GOTO_PER_READ_X * xb_after),
+                "after_y_goto_equiv": round(_GOTO_PER_READ_Y * yb_after),
+                "x_error_pulses": xb_after - x_target_p,
+                "y_error_pulses": yb_after - y_target_p,
+            }
+        )
 
     def _goto_read_units(
         self,

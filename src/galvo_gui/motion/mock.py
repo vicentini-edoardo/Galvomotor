@@ -32,6 +32,7 @@ class MockGalvoBackend(GalvoBackend):
         self._y_p: float = 0.0
         self._home_x_p: float = 0.0
         self._home_y_p: float = 0.0
+        self._last_move_diag: dict[str, int | float] = {}
 
     # ------------------------------------------------------------------
     # Connection
@@ -52,8 +53,24 @@ class MockGalvoBackend(GalvoBackend):
 
     def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
         self._require_connected()
+        before_x = self._x_p - self._home_x_p
+        before_y = self._y_p - self._home_y_p
         self._x_p += dx_p
         self._y_p += dy_p
+        after_x = self._x_p - self._home_x_p
+        after_y = self._y_p - self._home_y_p
+        self._last_move_diag = {
+            "requested_step_x": dx_p,
+            "requested_step_y": dy_p,
+            "before_x_read": before_x,
+            "before_y_read": before_y,
+            "target_x_read": before_x + dx_p,
+            "target_y_read": before_y + dy_p,
+            "after_x_read": after_x,
+            "after_y_read": after_y,
+            "x_error_pulses": after_x - (before_x + dx_p),
+            "y_error_pulses": after_y - (before_y + dy_p),
+        }
 
     def read_xy_pulses(self) -> Tuple[float, float]:
         self._require_connected()
@@ -83,6 +100,9 @@ class MockGalvoBackend(GalvoBackend):
 
     def pulses_per_nm(self) -> float:
         return _MOCK_PULSES_PER_NM
+
+    def last_move_diagnostics(self) -> dict[str, int | float]:
+        return dict(self._last_move_diag)
 
     # ------------------------------------------------------------------
 

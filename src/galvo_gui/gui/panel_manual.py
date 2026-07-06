@@ -69,6 +69,41 @@ def _append_move_history(message: str) -> None:
             fh.write("\n")
 
 
+def _format_move_diag_fields(diag: dict[str, int | float]) -> str:
+    if not diag:
+        return ""
+    parts: list[str] = []
+    for key in (
+        "requested_step_x",
+        "requested_step_y",
+        "before_x_read",
+        "before_y_read",
+        "target_x_read",
+        "target_y_read",
+        "target_x_goto",
+        "target_y_goto",
+        "last_cmd_gx_before",
+        "last_cmd_gy_before",
+        "cmd_gx_sent",
+        "cmd_gy_sent",
+        "after_x_read",
+        "after_y_read",
+        "after_x_goto_equiv",
+        "after_y_goto_equiv",
+        "x_error_pulses",
+        "y_error_pulses",
+    ):
+        if key not in diag:
+            continue
+        value = diag[key]
+        if isinstance(value, float):
+            rendered = f"{value:.0f}" if value.is_integer() else f"{value:g}"
+        else:
+            rendered = str(value)
+        parts.append(f"{key}={rendered}")
+    return f" {' '.join(parts)}" if parts else ""
+
+
 class _BackendOpRunner(QObject):
     """Execute blocking backend lifecycle operations on one dedicated thread.
 
@@ -1161,10 +1196,11 @@ class MotionPanel(QWidget):
     ) -> None:
         direction = self._format_xy_direction(dx_p, dy_p)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        diag = self._xy_move_diag_fields()
         _append_move_history(
             f"{stamp} kind={kind} status=ok step=({dx_p:.0f},{dy_p:.0f}) pulses "
             f"direction={direction} before=({before_x_p:.0f},{before_y_p:.0f}) "
-            f"after=({after_x_p:.0f},{after_y_p:.0f})"
+            f"after=({after_x_p:.0f},{after_y_p:.0f}){diag}"
         )
 
     def _log_xy_move_error(
@@ -1178,11 +1214,20 @@ class MotionPanel(QWidget):
     ) -> None:
         direction = self._format_xy_direction(dx_p, dy_p)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        diag = self._xy_move_diag_fields()
         _append_move_history(
             f"{stamp} kind={kind} status=error step=({dx_p:.0f},{dy_p:.0f}) pulses "
             f"direction={direction} before=({before_x_p:.0f},{before_y_p:.0f}) "
-            f'error="{error}"'
+            f'{diag} error="{error}"'
         )
+
+    def _xy_move_diag_fields(self) -> str:
+        backend = self._galvo_backend
+        if backend is None:
+            return ""
+        with contextlib.suppress(Exception):
+            return _format_move_diag_fields(backend.last_move_diagnostics())
+        return ""
 
     @staticmethod
     def _format_xy_direction(dx_p: float, dy_p: float) -> str:

@@ -114,6 +114,14 @@ class GalvoBackend(ABC):
         """Encoder pulses per nanometre (the calibration scale K)."""
         ...
 
+    def last_move_diagnostics(self) -> dict[str, int | float]:
+        """Best-effort backend diagnostics for the most recent XY move.
+
+        Backends that can expose raw command/read values should override this.
+        Callers must treat missing keys as unavailable data.
+        """
+        return {}
+
     # -- nm convenience wrappers (single conversion; never chain them) ----
 
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:

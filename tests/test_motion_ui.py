@@ -208,6 +208,10 @@ def test_motion_panel_writes_xy_move_history_file_and_keeps_last_100(
     assert "status=ok" in lines[-1]
     assert "direction=right" in lines[-1]
     assert "step=(100,0) pulses" in lines[-1]
+    assert "requested_step_x=100" in lines[-1]
+    assert "before_x_read=10000" in lines[-1]
+    assert "target_x_read=10100" in lines[-1]
+    assert "after_x_read=10100" in lines[-1]
     assert "before=(100,0)" in lines[0]
     assert "after=(200,0)" in lines[0]
     assert "after=(10100,0)" in lines[-1]
@@ -231,6 +235,21 @@ def test_motion_panel_logs_xy_move_errors_to_file(
         "move_relative_pulses",
         lambda dx, dy: (_ for _ in ()).throw(GalvoError("test move failed")),
     )
+    monkeypatch.setattr(
+        backend,
+        "last_move_diagnostics",
+        lambda: {
+            "requested_step_x": 100,
+            "before_x_read": 0,
+            "target_x_read": 100,
+            "target_x_goto": 11,
+            "last_cmd_gx_before": 10,
+            "cmd_gx_sent": 11,
+            "after_x_read": -12,
+            "after_x_goto_equiv": -1,
+            "x_error_pulses": -112,
+        },
+    )
 
     panel._jog_xy(1, 0)
 
@@ -239,6 +258,9 @@ def test_motion_panel_logs_xy_move_errors_to_file(
     assert "status=error" in line
     assert "step=(100,0) pulses" in line
     assert 'error="test move failed"' in line
+    assert "requested_step_x=100" in line
+    assert "cmd_gx_sent=11" in line
+    assert "x_error_pulses=-112" in line
 
 
 def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -> None:
