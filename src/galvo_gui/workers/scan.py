@@ -51,8 +51,8 @@ class ScanWorker(QThread):
         self,
         galvo: GalvoBackend,
         nea: NeaBackend,
-        dx_nm: float,
-        dy_nm: float,
+        dx_pulses: float,
+        dy_pulses: float,
         nb_x: int,
         nb_y: int,
         twait: float,
@@ -64,8 +64,8 @@ class ScanWorker(QThread):
         super().__init__(parent)  # type: ignore[arg-type]
         self._galvo = galvo
         self._nea = nea
-        self._dx_nm = dx_nm
-        self._dy_nm = dy_nm
+        self._dx_pulses = dx_pulses
+        self._dy_pulses = dy_pulses
         self._nb_x = nb_x
         self._nb_y = nb_y
         self._twait = twait
@@ -106,14 +106,14 @@ class ScanWorker(QThread):
         try:
             self.log_message.emit(
                 f"Scan started: {self._nb_x}×{self._nb_y} px, "
-                f"Δx={self._dx_nm:.0f} nm, Δy={self._dy_nm:.0f} nm, "
+                f"Δx={self._dx_pulses:.0f} pulses, Δy={self._dy_pulses:.0f} pulses, "
                 f"twait={self._twait:.2f} s"
             )
             run_raster_scan(
                 self._galvo,
                 self._nea,
-                self._dx_nm,
-                self._dy_nm,
+                self._dx_pulses,
+                self._dy_pulses,
                 self._nb_x,
                 self._nb_y,
                 self._twait,
@@ -152,8 +152,8 @@ class ScanWorker(QThread):
         path = Path(self._save_dir) / f"{stem}_{now}.h5"
 
         meta = {
-            "dx_nm": self._dx_nm,
-            "dy_nm": self._dy_nm,
+            "dx_pulses": self._dx_pulses,
+            "dy_pulses": self._dy_pulses,
             "nb_x": self._nb_x,
             "nb_y": self._nb_y,
             "twait_s": self._twait,

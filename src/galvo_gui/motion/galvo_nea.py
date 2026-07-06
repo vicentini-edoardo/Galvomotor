@@ -63,6 +63,9 @@ _N_HARMONICS = 6
 _MOVE_SETTLE_S = 0.05
 _MOVE_FOLLOW_TIMEOUT_S = 0.25
 _MOVE_FOLLOW_POLL_S = 0.02
+_OFFSET_CALIBRATION_REPEATS = 3
+_OFFSET_CALIBRATION_NOISE_P = 20.0
+_OFFSET_CALIBRATION_STEP_P = 500.0
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
 # fine "read" pulses, while ctr_goto_xy expects coarser command units.  The
@@ -151,6 +154,10 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._cmd_gx: int | None = None
         self._cmd_gy: int | None = None
         self._x_goto_bias = _X_GOTO_BIAS
+        self._offset_x_p = 0.0
+        self._offset_y_p = 0.0
+        self._offset_enabled = True
+        self._has_last_good_offset = False
         self._status_callback: Callable[[str], None] | None = None
         self._backend_label = "Galvo"
         self._last_move_diag: dict[str, int | float] = {}
@@ -168,6 +175,7 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._report_status("Validating hardware read-back...")
         self._validate_readback()
         self._connected = True
+        self._auto_calibrate_offset()
         self._report_status("Galvo connection complete.")
 
     def disconnect(self) -> None:
@@ -179,6 +187,71 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def set_offset_correction_enabled(self, enabled: bool) -> None:
+        self._offset_enabled = bool(enabled)
+
+    def offset_correction_enabled(self) -> bool:
+        return self._offset_enabled
+
+    def run_offset_calibration(self) -> Tuple[float, float]:
+        self._require_connected()
+        self._report_status("Running XY offset calibration...")
+        start_x, start_y = self._read_gb511_bits()
+        saved_offsets = (self._offset_x_p, self._offset_y_p)
+        saved_enabled = self._offset_enabled
+        saved_has_last_good = self._has_last_good_offset
+        try:
+            self._offset_enabled = False
+            self._offset_x_p = 0.0
+            self._offset_y_p = 0.0
+            x_samples = self._collect_axis_offset_samples("x", _OFFSET_CALIBRATION_STEP_P)
+            y_samples = self._collect_axis_offset_samples("y", _OFFSET_CALIBRATION_STEP_P)
+            x_usable = _filtered_offset_samples(x_samples, _OFFSET_CALIBRATION_NOISE_P)
+            y_usable = _filtered_offset_samples(y_samples, _OFFSET_CALIBRATION_NOISE_P)
+            if x_usable:
+                self._offset_x_p = _average_axis_offset(x_samples, _OFFSET_CALIBRATION_NOISE_P)
+            else:
+                self._offset_x_p = saved_offsets[0] if saved_has_last_good else 0.0
+            if y_usable:
+                self._offset_y_p = _average_axis_offset(y_samples, _OFFSET_CALIBRATION_NOISE_P)
+            else:
+                self._offset_y_p = saved_offsets[1] if saved_has_last_good else 0.0
+            self._has_last_good_offset = bool(x_usable or y_usable or saved_has_last_good)
+            if not x_usable and not y_usable and not saved_has_last_good:
+                self._report_status(
+                    "Offset calibration warning: all samples were within the ±20 pulse noise band."
+                )
+            else:
+                self._report_status(
+                    f"Offset calibration result: X={self._offset_x_p:.0f} pulses, "
+                    f"Y={self._offset_y_p:.0f} pulses."
+                )
+            self._goto_read_units(
+                start_x,
+                start_y,
+                ref=self._read_gb511_bits(),
+                x_offset_p=self._offset_x_p,
+                y_offset_p=self._offset_y_p,
+            )
+            time.sleep(_MOVE_SETTLE_S)
+            return (self._offset_x_p, self._offset_y_p)
+        except Exception:
+            self._offset_x_p, self._offset_y_p = saved_offsets
+            self._offset_enabled = saved_enabled
+            self._has_last_good_offset = saved_has_last_good
+            raise
+        finally:
+            self._offset_enabled = saved_enabled
+
+    def _auto_calibrate_offset(self) -> None:
+        try:
+            self.run_offset_calibration()
+        except Exception as exc:  # noqa: BLE001
+            self._offset_x_p = 0.0
+            self._offset_y_p = 0.0
+            self._has_last_good_offset = False
+            self._report_status(f"Offset calibration warning: {exc}")
 
     def _open_galvo_hardware(self) -> None:
         open_kwargs: dict[str, Any] = {"CalFn": _DEFAULT_CORRECTION_FILE}
@@ -262,13 +335,11 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         gy_cur = round(_GOTO_PER_READ_Y * yb_before)
 
         if dx_p:
-            gx_target = round(_GOTO_PER_READ_X * (xb_before + dx_p)) + int(
-                getattr(self, "_x_goto_bias", 0)
-            )
+            gx_target = self._read_target_to_goto("x", xb_before + dx_p)
         else:
             gx_target = self._parked_goto(getattr(self, "_cmd_gx", None), gx_cur)
         if dy_p:
-            gy_target = round(_GOTO_PER_READ_Y * (yb_before + dy_p))
+            gy_target = self._read_target_to_goto("y", yb_before + dy_p)
         else:
             gy_target = self._parked_goto(getattr(self, "_cmd_gy", None), gy_cur)
         cmd_gx_before = getattr(self, "_cmd_gx", None)
@@ -374,6 +445,35 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
 
     def last_move_diagnostics(self) -> dict[str, int | float]:
         return dict(self._last_move_diag)
+
+    def _collect_axis_offset_samples(self, axis: str, step_p: float) -> list[float]:
+        samples: list[float] = []
+        for _ in range(_OFFSET_CALIBRATION_REPEATS):
+            for sign in (1.0, -1.0):
+                start_x, start_y = self._read_gb511_bits()
+                dx_p = sign * step_p if axis == "x" else 0.0
+                dy_p = sign * step_p if axis == "y" else 0.0
+                try:
+                    self.move_relative_pulses(dx_p, dy_p)
+                except GalvoError:
+                    pass
+                diag = self.last_move_diagnostics()
+                before_key = "before_x_read" if axis == "x" else "before_y_read"
+                after_key = "after_x_read" if axis == "x" else "after_y_read"
+                before = float(diag[before_key])
+                after = float(diag[after_key])
+                commanded = dx_p if axis == "x" else dy_p
+                sample = (after - before) - commanded
+                samples.append(sample)
+                self._goto_read_units(
+                    start_x,
+                    start_y,
+                    ref=self._read_gb511_bits(),
+                    x_offset_p=sample if axis == "x" else 0.0,
+                    y_offset_p=sample if axis == "y" else 0.0,
+                )
+                time.sleep(_MOVE_SETTLE_S)
+        return samples
 
     def set_home_pulses(
         self, x_p: float | None = None, y_p: float | None = None
@@ -491,6 +591,9 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         x_read: float,
         y_read: float,
         ref: Tuple[int, int] | None = None,
+        *,
+        x_offset_p: float | None = None,
+        y_offset_p: float | None = None,
     ) -> bool:
         """Command an absolute target given in read pulses (notebook galvo_move).
 
@@ -506,14 +609,32 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         *ref* (the current position, read if not supplied), i.e. the request is
         below the board's command resolution and no motion can be expected.
         """
-        gx = round(_GOTO_PER_READ_X * x_read)
-        gy = round(_GOTO_PER_READ_Y * y_read)
+        gx = self._read_target_to_goto("x", x_read, x_offset_p=x_offset_p)
+        gy = self._read_target_to_goto("y", y_read, y_offset_p=y_offset_p)
         xb_now, yb_now = ref if ref is not None else self._read_gb511_bits()
         self._command_goto(gx, gy)
         return (gx, gy) != (
-            round(_GOTO_PER_READ_X * xb_now),
-            round(_GOTO_PER_READ_Y * yb_now),
+            self._read_target_to_goto("x", xb_now, x_offset_p=x_offset_p),
+            self._read_target_to_goto("y", yb_now, y_offset_p=y_offset_p),
         )
+
+    def _read_target_to_goto(
+        self,
+        axis: str,
+        read_target_p: float,
+        *,
+        x_offset_p: float | None = None,
+        y_offset_p: float | None = None,
+    ) -> int:
+        if axis == "x":
+            offset = getattr(self, "_offset_x_p", 0.0) if x_offset_p is None else float(x_offset_p)
+            enabled = getattr(self, "_offset_enabled", True)
+            corrected = read_target_p - (offset if enabled or x_offset_p is not None else 0.0)
+            return round(_GOTO_PER_READ_X * corrected) + int(getattr(self, "_x_goto_bias", 0))
+        offset = getattr(self, "_offset_y_p", 0.0) if y_offset_p is None else float(y_offset_p)
+        enabled = getattr(self, "_offset_enabled", True)
+        corrected = read_target_p - (offset if enabled or y_offset_p is not None else 0.0)
+        return round(_GOTO_PER_READ_Y * corrected)
 
     def _command_goto(self, gx: int, gy: int) -> None:
         """Command absolute goto units on both axes and remember them so a
@@ -785,6 +906,17 @@ def _available_xy_steps_pulses(goto_per_read: float) -> tuple[float, ...]:
 def _axis_follow_tolerance_pulses(goto_per_read: float) -> int:
     # Half a coarse goto-unit is normal read-back quantisation/noise, not a failed move.
     return max(1, math.ceil(0.5 / goto_per_read))
+
+
+def _filtered_offset_samples(samples: list[float], noise_threshold_p: float) -> list[float]:
+    return [sample for sample in samples if abs(sample) > noise_threshold_p]
+
+
+def _average_axis_offset(samples: list[float], noise_threshold_p: float) -> float:
+    usable = _filtered_offset_samples(samples, noise_threshold_p)
+    if not usable:
+        return 0.0
+    return float(round(sum(usable) / len(usable)))
 
 
 @contextlib.contextmanager

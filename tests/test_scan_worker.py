@@ -7,6 +7,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 import h5py
+import json
 from PyQt6.QtWidgets import QApplication
 
 from galvo_gui.motion.mock import MockGalvoBackend, MockNeaBackend
@@ -29,8 +30,8 @@ def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  
     worker = ScanWorker(
         galvo=galvo,
         nea=nea,
-        dx_nm=300.0,
-        dy_nm=300.0,
+        dx_pulses=300.0,
+        dy_pulses=300.0,
         nb_x=3,
         nb_y=3,
         twait=0.0,
@@ -58,6 +59,9 @@ def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  
             assert h5[f"O{h}"].shape == (3, 3)
         assert "coordinates" in h5
         assert h5["coordinates"].shape == (3, 3, 2)
+        metadata = json.loads(h5.attrs["metadata"])
+        assert metadata["dx_pulses"] == 300.0
+        assert metadata["dy_pulses"] == 300.0
 
     galvo.disconnect()
     nea.disconnect()
@@ -73,8 +77,8 @@ def test_scan_worker_stop(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  # noqa
     worker = ScanWorker(
         galvo=galvo,
         nea=nea,
-        dx_nm=500.0,
-        dy_nm=500.0,
+        dx_pulses=500.0,
+        dy_pulses=500.0,
         nb_x=10,
         nb_y=10,
         twait=0.0,

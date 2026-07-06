@@ -113,22 +113,22 @@ class ScanPanel(QWidget):
         grid.setColumnStretch(1, 1)
 
         row = 0
-        grid.addWidget(QLabel("X range (nm):"), row, 0)
-        self._x_range = QDoubleSpinBox()
-        self._x_range.setRange(1.0, 1_000_000.0)
-        self._x_range.setValue(500.0)
-        self._x_range.setDecimals(0)
-        self._x_range.setSingleStep(100.0)
-        grid.addWidget(self._x_range, row, 1)
+        grid.addWidget(QLabel("X range (pulses):"), row, 0)
+        self._x_range_pulses = QDoubleSpinBox()
+        self._x_range_pulses.setRange(1.0, 1_000_000.0)
+        self._x_range_pulses.setValue(500.0)
+        self._x_range_pulses.setDecimals(0)
+        self._x_range_pulses.setSingleStep(100.0)
+        grid.addWidget(self._x_range_pulses, row, 1)
 
         row += 1
-        grid.addWidget(QLabel("Y range (nm):"), row, 0)
-        self._y_range = QDoubleSpinBox()
-        self._y_range.setRange(1.0, 1_000_000.0)
-        self._y_range.setValue(500.0)
-        self._y_range.setDecimals(0)
-        self._y_range.setSingleStep(100.0)
-        grid.addWidget(self._y_range, row, 1)
+        grid.addWidget(QLabel("Y range (pulses):"), row, 0)
+        self._y_range_pulses = QDoubleSpinBox()
+        self._y_range_pulses.setRange(1.0, 1_000_000.0)
+        self._y_range_pulses.setValue(500.0)
+        self._y_range_pulses.setDecimals(0)
+        self._y_range_pulses.setSingleStep(100.0)
+        grid.addWidget(self._y_range_pulses, row, 1)
 
         row += 1
         grid.addWidget(QLabel("X pixels:"), row, 0)
@@ -288,8 +288,8 @@ class ScanPanel(QWidget):
         self._worker = ScanWorker(
             galvo=self._galvo_backend,
             nea=self._nea_backend,
-            dx_nm=self._x_range.value(),
-            dy_nm=self._y_range.value(),
+            dx_pulses=self._x_range_pulses.value(),
+            dy_pulses=self._y_range_pulses.value(),
             nb_x=nb_x,
             nb_y=nb_y,
             twait=self._twait.value(),
@@ -393,10 +393,15 @@ class ScanPanel(QWidget):
         import contextlib
         s = self._settings
         for attr, key, default in [
-            (self._x_range, "x_range", 500.0),
-            (self._y_range, "y_range", 500.0),
             (self._twait, "twait", 0.2),
             (self._t_integ, "t_integ", 0.05),
+        ]:
+            v = s.value(key, default)
+            with contextlib.suppress(Exception):
+                attr.setValue(float(v))  # type: ignore[union-attr]
+        for attr, key, default in [
+            (self._x_range_pulses, "x_range_pulses", 500.0),
+            (self._y_range_pulses, "y_range_pulses", 500.0),
         ]:
             v = s.value(key, default)
             with contextlib.suppress(Exception):
@@ -417,8 +422,8 @@ class ScanPanel(QWidget):
 
     def save_settings(self) -> None:
         s = self._settings
-        s.setValue("x_range", self._x_range.value())
-        s.setValue("y_range", self._y_range.value())
+        s.setValue("x_range_pulses", self._x_range_pulses.value())
+        s.setValue("y_range_pulses", self._y_range_pulses.value())
         s.setValue("nb_x", self._nb_x.value())
         s.setValue("nb_y", self._nb_y.value())
         s.setValue("twait", self._twait.value())

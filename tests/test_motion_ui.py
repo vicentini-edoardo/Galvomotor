@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication, QLabel
 from galvo_gui.gui.main_window import MainWindow
 from galvo_gui.gui import panel_manual
 from galvo_gui.gui.panel_manual import ConnectionPanel, MotionPanel
+from galvo_gui.gui.panel_scan import ScanPanel
 
 
 @pytest.fixture
@@ -334,6 +335,14 @@ def test_connection_panel_has_separate_nea_and_galvo_sections(qapp: object) -> N
     ]
 
 
+def test_scan_panel_uses_pulse_range_labels(qapp: object) -> None:
+    panel = ScanPanel()
+
+    labels = {label.text() for label in panel.findChildren(QLabel)}
+    assert "X range (pulses):" in labels
+    assert "Y range (pulses):" in labels
+
+
 def test_galvo_section_shows_canon_fields_for_canon_mode(qapp: object) -> None:
     panel = ConnectionPanel()
     panel.show()
@@ -344,6 +353,21 @@ def test_galvo_section_shows_canon_fields_for_canon_mode(qapp: object) -> None:
     assert galvo._board_index_edit.isVisible()
     assert galvo._program_file_edit.isVisible()
     assert galvo._cal_edit.isVisible()
+
+
+def test_galvo_section_has_calibration_controls_and_persists_preference(qapp: object) -> None:
+    panel = ConnectionPanel()
+    section = panel._galvo_section
+    section._settings.clear()
+
+    assert not section._offset_checkbox.isEnabled()
+    assert not section._rerun_calibration_btn.isEnabled()
+
+    section._offset_checkbox.setChecked(False)
+    section.save_settings()
+
+    restored = ConnectionPanel()._galvo_section
+    assert restored._offset_checkbox.isChecked() is False
 
 
 def _process_until(qapp, predicate, timeout_s: float = 5.0) -> None:
@@ -624,3 +648,30 @@ def test_galvo_section_does_not_force_invalid_canon_board_index(qapp, monkeypatc
     _process_until(qapp, lambda: section._backend is not None)
 
     assert captured["board_index"] is None
+
+
+def test_galvo_section_manual_calibration_runs_off_the_gui_thread(qapp, monkeypatch) -> None:
+    import threading
+
+    from galvo_gui.motion.mock import MockGalvoBackend
+
+    panel = ConnectionPanel()
+    section = panel._galvo_section
+    backend = MockGalvoBackend()
+    backend.connect()
+    section._backend = backend
+    section._offset_checkbox.setEnabled(True)
+    section._rerun_calibration_btn.setEnabled(True)
+
+    call_threads: list[int] = []
+
+    def calibrate() -> tuple[float, float]:
+        call_threads.append(threading.get_ident())
+        return (0.0, 0.0)
+
+    monkeypatch.setattr(backend, "run_offset_calibration", calibrate)
+
+    section._rerun_offset_calibration()
+    _process_until(qapp, lambda: bool(call_threads))
+
+    assert call_threads[0] != threading.get_ident()

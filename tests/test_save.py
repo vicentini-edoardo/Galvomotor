@@ -54,13 +54,13 @@ def test_complex_values_correct(tmp_path: Any) -> None:  # noqa: F821
 def test_metadata_stored(tmp_path: Any) -> None:  # noqa: F821
     import json
     amp, phase, coords = _make_arrays()
-    meta = {"dx_nm": 500.0, "nb_x": 5}
+    meta = {"dx_pulses": 500.0, "nb_x": 5}
     path = tmp_path / "scan.h5"
     save_scan_h5(path, amp, phase, coords, coords, meta)
 
     with h5py.File(path, "r") as h5:
         recovered = json.loads(h5.attrs["metadata"])
-    assert recovered["dx_nm"] == 500.0
+    assert recovered["dx_pulses"] == 500.0
     assert recovered["nb_x"] == 5
 
 

@@ -488,6 +488,7 @@ def test_galvo_connect_reports_stage_progress(monkeypatch) -> None:
 
     monkeypatch.setattr(backend, "_open_galvo_hardware", lambda: None)
     monkeypatch.setattr(backend, "_validate_readback", lambda: None)
+    monkeypatch.setattr(backend, "_auto_calibrate_offset", lambda: None)
 
     backend.connect()
 

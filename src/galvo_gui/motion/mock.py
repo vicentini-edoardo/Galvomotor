@@ -32,6 +32,7 @@ class MockGalvoBackend(GalvoBackend):
         self._y_p: float = 0.0
         self._home_x_p: float = 0.0
         self._home_y_p: float = 0.0
+        self._offset_enabled = True
         self._last_move_diag: dict[str, int | float] = {}
 
     # ------------------------------------------------------------------
@@ -103,6 +104,16 @@ class MockGalvoBackend(GalvoBackend):
 
     def last_move_diagnostics(self) -> dict[str, int | float]:
         return dict(self._last_move_diag)
+
+    def set_offset_correction_enabled(self, enabled: bool) -> None:
+        self._offset_enabled = bool(enabled)
+
+    def offset_correction_enabled(self) -> bool:
+        return self._offset_enabled
+
+    def run_offset_calibration(self) -> Tuple[float, float]:
+        self._require_connected()
+        return (0.0, 0.0)
 
     # ------------------------------------------------------------------
 

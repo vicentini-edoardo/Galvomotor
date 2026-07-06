@@ -16,6 +16,7 @@ from typing import Callable
 from PyQt6.QtCore import QMetaObject, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QDoubleValidator
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -121,19 +122,26 @@ class _BackendOpRunner(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._op: Callable[[], None] | None = None
+        self._last_result: object | None = None
 
     def set_op(self, op: Callable[[], None]) -> None:
         self._op = op
+
+    def take_result(self) -> object | None:
+        result = self._last_result
+        self._last_result = None
+        return result
 
     @pyqtSlot()
     def run_current_op(self) -> None:
         op = self._op
         self._op = None
+        self._last_result = None
         if op is None:
             self.failed.emit("Internal error: no backend operation scheduled.")
             return
         try:
-            op()
+            self._last_result = op()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.failed.emit(str(exc))
         else:
@@ -193,6 +201,12 @@ class _ConnectionSection(QGroupBox):
     def save_settings(self) -> None:  # pragma: no cover - overridden
         pass
 
+    def _build_extra_controls(self, grid: QGridLayout, row: int) -> int:
+        return row
+
+    def _after_connection_state_changed(self) -> None:
+        pass
+
     # -- UI ------------------------------------------------------------
 
     def _build_ui(self) -> None:
@@ -203,6 +217,7 @@ class _ConnectionSection(QGroupBox):
         self._connect_btn.setProperty("accent", True)
         self._connect_btn.clicked.connect(self._on_connect_toggle)
         grid.addWidget(self._connect_btn, row, 0, 1, 3)
+        self._build_extra_controls(grid, row + 1)
 
     def is_backend_connected(self) -> bool:
         backend = self._backend
@@ -229,6 +244,7 @@ class _ConnectionSection(QGroupBox):
         self._pending_backend = backend
         self._set_button_state("Connecting…", accent=True, enabled=False)
         self._set_fields_enabled(False)
+        self._after_connection_state_changed()
         self._start_op(
             lambda: backend.connect(connect_target),  # type: ignore[attr-defined]
             self._on_connect_succeeded,
@@ -241,6 +257,7 @@ class _ConnectionSection(QGroupBox):
         self._pending_backend = None
         self._set_button_state("Disconnect", accent=False, enabled=True)
         self.message.emit(f"Connected ({self._pending_name}).")
+        self._after_connection_state_changed()
         self.connected.emit(self._backend)
 
     def _on_connect_failed(self, message: str) -> None:
@@ -249,6 +266,7 @@ class _ConnectionSection(QGroupBox):
         self.message.emit(f"Connection failed: {message}")
         self._set_button_state("Connect", accent=True, enabled=True)
         self._set_fields_enabled(True)
+        self._after_connection_state_changed()
 
     def _disconnect(self) -> None:
         backend = self._backend
@@ -259,6 +277,7 @@ class _ConnectionSection(QGroupBox):
         self._backend = None
         self.disconnected.emit()
         self._set_button_state("Disconnecting…", accent=False, enabled=False)
+        self._after_connection_state_changed()
         self._start_op(backend.disconnect, self._on_disconnect_succeeded,  # type: ignore[attr-defined]
                        self._on_disconnect_failed)
 
@@ -267,12 +286,14 @@ class _ConnectionSection(QGroupBox):
         self.message.emit("Disconnected.")
         self._set_button_state("Connect", accent=True, enabled=True)
         self._set_fields_enabled(True)
+        self._after_connection_state_changed()
 
     def _on_disconnect_failed(self, message: str) -> None:
         self._finish_op()
         self.message.emit(f"Disconnect error: {message}")
         self._set_button_state("Connect", accent=True, enabled=True)
         self._set_fields_enabled(True)
+        self._after_connection_state_changed()
 
     # -- op thread machinery -------------------------------------------
 
@@ -352,6 +373,10 @@ class _ConnectionSection(QGroupBox):
     def _append_backend_progress(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.message.emit(f"[{timestamp}] {message}")
+
+    def _take_runner_result(self) -> object | None:
+        runner = self._op_runner
+        return None if runner is None else runner.take_result()
 
     def _set_button_state(self, text: str, accent: bool, enabled: bool) -> None:
         self._connect_btn.setText(text)
@@ -495,6 +520,21 @@ class GalvoConnectionSection(_ConnectionSection):
         self._on_mode_changed(0)
         return 5
 
+    def _build_extra_controls(self, grid: QGridLayout, row: int) -> int:
+        controls = QWidget(self)
+        layout = QHBoxLayout(controls)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(8)
+        self._offset_checkbox = QCheckBox("Apply offset correction")
+        self._offset_checkbox.toggled.connect(self._on_offset_checkbox_toggled)
+        layout.addWidget(self._offset_checkbox)
+        self._rerun_calibration_btn = QPushButton("Run calibration at current position")
+        self._rerun_calibration_btn.clicked.connect(self._rerun_offset_calibration)
+        layout.addWidget(self._rerun_calibration_btn)
+        layout.addStretch()
+        grid.addWidget(controls, row, 0, 1, 3)
+        return row + 1
+
     def _on_mode_changed(self, index: int) -> None:
         is_real = index in (self.MODE_GB511, self.MODE_CANON)
         is_canon = index == self.MODE_CANON
@@ -502,6 +542,7 @@ class GalvoConnectionSection(_ConnectionSection):
             widget.setVisible(is_real)
         for widget in self._canon_row_widgets:
             widget.setVisible(is_canon)
+        self._update_calibration_controls()
 
     def _browse_cal(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -514,6 +555,9 @@ class GalvoConnectionSection(_ConnectionSection):
 
     def _set_fields_enabled(self, enabled: bool) -> None:
         self._mode_combo.setEnabled(enabled)
+
+    def _after_connection_state_changed(self) -> None:
+        self._update_calibration_controls()
 
     def _make_backend(self) -> tuple[object | None, str]:
         from galvo_gui.motion.mock import MockGalvoBackend
@@ -575,6 +619,11 @@ class GalvoConnectionSection(_ConnectionSection):
         program_file = s.value("canon_program_file", "")
         if isinstance(program_file, str):
             self._program_file_edit.setText(program_file)
+        apply_offset = s.value("apply_offset_correction", True)
+        if isinstance(apply_offset, str):
+            apply_offset = apply_offset.lower() != "false"
+        self._offset_checkbox.setChecked(bool(apply_offset))
+        self._update_calibration_controls()
 
     def save_settings(self) -> None:
         s = self._settings
@@ -583,6 +632,70 @@ class GalvoConnectionSection(_ConnectionSection):
         s.setValue("canon_serial_port", self._serial_port_edit.text())
         s.setValue("canon_board_index", self._board_index_edit.text())
         s.setValue("canon_program_file", self._program_file_edit.text())
+        s.setValue("apply_offset_correction", self._offset_checkbox.isChecked())
+
+    def _backend_supports_manual_calibration(self) -> bool:
+        backend = self._backend
+        if backend is None:
+            return False
+        if backend.__class__.__module__ == "galvo_gui.motion.mock":
+            return False
+        return callable(getattr(backend, "run_offset_calibration", None))
+
+    def _update_calibration_controls(self) -> None:
+        if not hasattr(self, "_offset_checkbox") or not hasattr(self, "_rerun_calibration_btn"):
+            return
+        connected = self.is_backend_connected()
+        backend = self._backend
+        setter = getattr(backend, "set_offset_correction_enabled", None)
+        if connected and callable(setter):
+            setter(self._offset_checkbox.isChecked())
+        enabled = (
+            connected
+            and not self._op_busy
+            and self._mode_combo.currentIndex() != self.MODE_SIMULATED
+            and self._backend_supports_manual_calibration()
+        )
+        self._offset_checkbox.setEnabled(enabled)
+        self._rerun_calibration_btn.setEnabled(enabled)
+        if not self._op_busy:
+            self._rerun_calibration_btn.setText("Run calibration at current position")
+
+    def _on_offset_checkbox_toggled(self, checked: bool) -> None:
+        backend = self._backend
+        setter = getattr(backend, "set_offset_correction_enabled", None)
+        if callable(setter):
+            setter(bool(checked))
+        self.save_settings()
+
+    def _rerun_offset_calibration(self) -> None:
+        backend = self._backend
+        if backend is None or self._op_busy:
+            return
+        self._rerun_calibration_btn.setText("Calibrating…")
+        self._connect_btn.setEnabled(False)
+        self._start_op(
+            backend.run_offset_calibration,  # type: ignore[attr-defined]
+            self._on_rerun_offset_calibration_succeeded,
+            self._on_rerun_offset_calibration_failed,
+        )
+        self._after_connection_state_changed()
+
+    def _on_rerun_offset_calibration_succeeded(self) -> None:
+        self._finish_op()
+        result = self._take_runner_result()
+        self._connect_btn.setEnabled(True)
+        if isinstance(result, tuple) and len(result) == 2:
+            self.message.emit(
+                f"Offset calibration updated: X={float(result[0]):.0f}, Y={float(result[1]):.0f} pulses."
+            )
+        self._after_connection_state_changed()
+
+    def _on_rerun_offset_calibration_failed(self, message: str) -> None:
+        self._finish_op()
+        self._connect_btn.setEnabled(True)
+        self.message.emit(f"Calibration failed: {message}")
+        self._after_connection_state_changed()
 
 
 class ConnectionPanel(QWidget):

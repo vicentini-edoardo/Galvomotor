@@ -123,6 +123,25 @@ class GalvoBackend(ABC):
         """
         return {}
 
+    @abstractmethod
+    def set_offset_correction_enabled(self, enabled: bool) -> None:
+        """Enable or disable application of the measured XY offset correction."""
+        ...
+
+    @abstractmethod
+    def offset_correction_enabled(self) -> bool:
+        """Whether measured XY offsets are currently applied to move targets."""
+        ...
+
+    @abstractmethod
+    def run_offset_calibration(self) -> Tuple[float, float]:
+        """Measure and store the current XY offset correction in encoder pulses.
+
+        Returns the active `(x_offset_pulses, y_offset_pulses)` tuple after the
+        calibration attempt.
+        """
+        ...
+
     # -- nm convenience wrappers (single conversion; never chain them) ----
 
     def move_relative(self, dx_nm: float, dy_nm: float) -> None:
@@ -199,8 +218,8 @@ class NeaBackend(ABC):
 def run_raster_scan(
     galvo: GalvoBackend,
     nea: NeaBackend,
-    dx_nm: float,
-    dy_nm: float,
+    dx_pulses: float,
+    dy_pulses: float,
     nb_x: int,
     nb_y: int,
     twait: float,
@@ -220,8 +239,8 @@ def run_raster_scan(
     Args:
         galvo:      connected galvo backend (XY motion)
         nea:        connected neaSNOM backend (optical readout)
-        dx_nm:      total scan range in x (nm)
-        dy_nm:      total scan range in y (nm)
+        dx_pulses:  total scan range in x (encoder pulses)
+        dy_pulses:  total scan range in y (encoder pulses)
         nb_x:       pixels in x
         nb_y:       pixels in y
         twait:      sleep time (s) after each move before reading
@@ -235,12 +254,12 @@ def run_raster_scan(
 
         settle = time.sleep
 
-    step_x = dx_nm / (nb_x - 1) if nb_x > 1 else 0.0
-    step_y = dy_nm / (nb_y - 1) if nb_y > 1 else 0.0
+    step_x = dx_pulses / (nb_x - 1) if nb_x > 1 else 0.0
+    step_y = dy_pulses / (nb_y - 1) if nb_y > 1 else 0.0
 
     # Move to start corner (-dx/2, -dy/2) relative to current centre.
     k = galvo.pulses_per_nm()
-    galvo.move_relative(-dx_nm / 2.0, -dy_nm / 2.0)
+    galvo.move_relative_pulses(-dx_pulses / 2.0, -dy_pulses / 2.0)
     settle(twait)
     x_start, _y_start = galvo.read_xy_nm()  # actual position after quantisation
 
@@ -255,7 +274,7 @@ def run_raster_scan(
             on_point(ix, iy, sample)
 
             if ix < nb_x - 1:
-                galvo.move_relative(step_x, 0.0)
+                galvo.move_relative_pulses(step_x, 0.0)
                 settle(twait)
 
         if stop_check():
@@ -264,7 +283,7 @@ def run_raster_scan(
         if iy < nb_y - 1:
             # End of row: correct back to x_start, step y down.
             x_curr, _ = galvo.read_xy_nm()
-            galvo.move_relative(x_start - x_curr, step_y)
+            galvo.move_relative_pulses((x_start - x_curr) * k, step_y)
             settle(twait)
 
     # Return to centre.

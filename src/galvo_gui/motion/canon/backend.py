@@ -54,6 +54,7 @@ class CanonGalvoBackend(RealGalvoBackend):
             self._report_status("Validating hardware read-back...")
             self._validate_readback()
             self._connected = True
+            self._auto_calibrate_offset()
             self._report_status("Galvo connection complete.")
         except Exception:
             self._report_status("Connection failed; unwinding partial session...")
