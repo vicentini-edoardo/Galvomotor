@@ -72,6 +72,7 @@ _MOVE_FOLLOW_POLL_S = 0.02
 # ~9x out of range, railing one axis against its limit — do not use them.
 _GOTO_PER_READ_X = 0.11080
 _GOTO_PER_READ_Y = 0.11080
+_X_GOTO_BIAS = 12
 
 # -2**19: value the GB511 reports on both axes when the position read-back is
 # not live (board not selected, held by another client, or the GC-211/212
@@ -149,6 +150,7 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         # axis on every jog (X and Y appear coupled). None until first command.
         self._cmd_gx: int | None = None
         self._cmd_gy: int | None = None
+        self._x_goto_bias = _X_GOTO_BIAS
         self._status_callback: Callable[[str], None] | None = None
         self._backend_label = "Galvo"
         self._last_move_diag: dict[str, int | float] = {}
@@ -260,7 +262,9 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         gy_cur = round(_GOTO_PER_READ_Y * yb_before)
 
         if dx_p:
-            gx_target = round(_GOTO_PER_READ_X * (xb_before + dx_p))
+            gx_target = round(_GOTO_PER_READ_X * (xb_before + dx_p)) + int(
+                getattr(self, "_x_goto_bias", 0)
+            )
         else:
             gx_target = self._parked_goto(getattr(self, "_cmd_gx", None), gx_cur)
         if dy_p:

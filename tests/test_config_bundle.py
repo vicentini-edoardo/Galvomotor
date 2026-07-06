@@ -240,6 +240,21 @@ def test_move_relative_accepts_small_x_readback_quantisation_error(monkeypatch) 
     backend.move_relative(100.0, 0.0)
 
 
+def test_move_relative_applies_configured_x_goto_bias(monkeypatch) -> None:
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+    wrapper = _FakeWrapper()
+    backend = _make_galvo(wrapper, _FakeGalvo())
+    backend._x_goto_bias = 12
+
+    with pytest.raises(GalvoError, match="X axis read-back"):
+        backend.move_relative_pulses(100.0, 0.0)
+
+    assert wrapper.goto_calls[-1] == (
+        round(_CX * (1000 + 100.0)) + 12,
+        round(_CX * 2000),
+    )
+
+
 def test_move_relative_waits_for_delayed_x_follow(monkeypatch) -> None:
     """A move should tolerate one stale readback sample if the next read catches up."""
 
