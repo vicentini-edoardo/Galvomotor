@@ -41,6 +41,7 @@ class SnomSample:
     xy_nm: Tuple[float, float]   # galvo read-back position (nm from center)
     o_amp: np.ndarray            # shape (6,) optical amplitude harmonics 0-5
     o_phase: np.ndarray          # shape (6,) optical phase harmonics 0-5 (radians)
+    xy_pulses: Tuple[float, float] = (0.0, 0.0)  # galvo read-back position (encoder pulses from center)
 
 
 class GalvoBackend(ABC):
@@ -184,12 +185,13 @@ class NeaBackend(ABC):
         self,
         t_integ_s: float = 0.05,
         xy_nm: Tuple[float, float] = (0.0, 0.0),
+        xy_pulses: Tuple[float, float] = (0.0, 0.0),
     ) -> SnomSample:
         """Read one snapshot of neaSNOM optical signals.
 
         *t_integ_s*: signal integration window in seconds (stream averaging).
-        *xy_nm*: galvo position to tag the sample with (supplied by the caller,
-        which owns the galvo backend).
+        *xy_nm*, *xy_pulses*: galvo position to tag the sample with (supplied
+        by the caller, which owns the galvo backend).
         """
         ...
 
@@ -237,6 +239,7 @@ def run_raster_scan(
     step_y = dy_nm / (nb_y - 1) if nb_y > 1 else 0.0
 
     # Move to start corner (-dx/2, -dy/2) relative to current centre.
+    k = galvo.pulses_per_nm()
     galvo.move_relative(-dx_nm / 2.0, -dy_nm / 2.0)
     settle(twait)
     x_start, _y_start = galvo.read_xy_nm()  # actual position after quantisation
@@ -246,8 +249,9 @@ def run_raster_scan(
             if stop_check():
                 break
 
-            xy = galvo.read_xy_nm()
-            sample = nea.read_sample(t_integ_s, xy)
+            xy_p = galvo.read_xy_pulses()  # single hardware read; nm derived from it
+            xy = (xy_p[0] / k, xy_p[1] / k)
+            sample = nea.read_sample(t_integ_s, xy, xy_p)
             on_point(ix, iy, sample)
 
             if ix < nb_x - 1:

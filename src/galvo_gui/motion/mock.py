@@ -160,6 +160,7 @@ class MockNeaBackend(NeaBackend):
         self,
         t_integ_s: float = 0.05,
         xy_nm: Tuple[float, float] = (0.0, 0.0),
+        xy_pulses: Tuple[float, float] = (0.0, 0.0),
     ) -> SnomSample:
         self._require_connected()
         time.sleep(min(t_integ_s, 0.005))  # fast for tests
@@ -179,6 +180,7 @@ class MockNeaBackend(NeaBackend):
             xy_nm=(x_nm, y_nm),
             o_amp=o_amp,
             o_phase=o_phase,
+            xy_pulses=(float(xy_pulses[0]), float(xy_pulses[1])),
         )
 
     # ------------------------------------------------------------------

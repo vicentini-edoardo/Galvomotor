@@ -18,6 +18,7 @@ def save_scan_h5(
     amp: np.ndarray,
     phase: np.ndarray,
     coords: np.ndarray,
+    coords_pulses: np.ndarray,
     metadata: Dict[str, Any],
 ) -> None:
     """Write galvo scan to HDF5 atomically (writes .tmp then renames).
@@ -25,6 +26,7 @@ def save_scan_h5(
     Datasets written:
         O0 .. O5  : complex64 (ny, nx) — amp * exp(1j * phase), matches notebook convention
         coordinates: float64 (ny, nx, 2) — actual galvo readback (x, y) in nm
+        coordinates_pulses: float64 (ny, nx, 2) — actual galvo readback (x, y) in encoder pulses
         amp_O0 .. amp_O5  : float64 (ny, nx) — raw amplitude (convenience)
         phase_O0 .. phase_O5: float64 (ny, nx) — raw phase in radians (convenience)
 
@@ -49,6 +51,7 @@ def save_scan_h5(
                 h5.create_dataset(f"phase_O{h}", data=p)
 
             h5.create_dataset("coordinates", data=coords.astype(np.float64))
+            h5.create_dataset("coordinates_pulses", data=coords_pulses.astype(np.float64))
 
         # Atomic rename
         if os.name == "nt" and tmp_path.exists() and path.exists():

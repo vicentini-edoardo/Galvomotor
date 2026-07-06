@@ -708,6 +708,7 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
         self,
         t_integ_s: float = 0.05,
         xy_nm: Tuple[float, float] = (0.0, 0.0),
+        xy_pulses: Tuple[float, float] = (0.0, 0.0),
     ) -> SnomSample:
         """Read optical amplitude and phase via neaSNOM stream (averaged over t_integ_s)."""
         self._require_connected()
@@ -735,6 +736,7 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
             xy_nm=(float(xy_nm[0]), float(xy_nm[1])),
             o_amp=np.array([_get(f"O{h}A") for h in range(_N_HARMONICS)]),
             o_phase=np.array([_get(f"O{h}P") for h in range(_N_HARMONICS)]),
+            xy_pulses=(float(xy_pulses[0]), float(xy_pulses[1])),
         )
 
     # ------------------------------------------------------------------

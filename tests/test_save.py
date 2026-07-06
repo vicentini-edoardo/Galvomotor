@@ -20,10 +20,11 @@ def _make_arrays(ny: int = 4, nx: int = 5) -> tuple:
 def test_roundtrip_shapes(tmp_path: Any) -> None:  # noqa: F821
     ny, nx = 4, 5
     amp, phase, coords = _make_arrays(ny, nx)
+    coords_pulses = coords * 0.1108
     meta = {"test": True, "nx": nx, "ny": ny}
     path = tmp_path / "scan.h5"
 
-    save_scan_h5(path, amp, phase, coords, meta)
+    save_scan_h5(path, amp, phase, coords, coords_pulses, meta)
 
     assert path.exists()
     with h5py.File(path, "r") as h5:
@@ -34,13 +35,15 @@ def test_roundtrip_shapes(tmp_path: Any) -> None:  # noqa: F821
             assert h5[f"phase_O{h}"].shape == (ny, nx)
         assert "coordinates" in h5
         assert h5["coordinates"].shape == (ny, nx, 2)
+        assert "coordinates_pulses" in h5
+        assert h5["coordinates_pulses"].shape == (ny, nx, 2)
 
 
 def test_complex_values_correct(tmp_path: Any) -> None:  # noqa: F821
     """O0 = amp[0] * exp(1j * phase[0])."""
     amp, phase, coords = _make_arrays()
     path = tmp_path / "scan.h5"
-    save_scan_h5(path, amp, phase, coords, {})
+    save_scan_h5(path, amp, phase, coords, coords, {})
 
     with h5py.File(path, "r") as h5:
         o0 = h5["O0"][:]
@@ -53,7 +56,7 @@ def test_metadata_stored(tmp_path: Any) -> None:  # noqa: F821
     amp, phase, coords = _make_arrays()
     meta = {"dx_nm": 500.0, "nb_x": 5}
     path = tmp_path / "scan.h5"
-    save_scan_h5(path, amp, phase, coords, meta)
+    save_scan_h5(path, amp, phase, coords, coords, meta)
 
     with h5py.File(path, "r") as h5:
         recovered = json.loads(h5.attrs["metadata"])
@@ -67,7 +70,7 @@ def test_atomic_on_error(tmp_path: Any) -> None:  # noqa: F821
 
     # Pass a non-array to force a write error (AttributeError from .astype on str)
     with pytest.raises((TypeError, AttributeError)):
-        save_scan_h5(path, "bad", "bad", "bad", {})  # type: ignore[arg-type]
+        save_scan_h5(path, "bad", "bad", "bad", "bad", {})  # type: ignore[arg-type]
 
     assert not path.exists()
     assert not (path.parent / (path.name + ".tmp")).exists()

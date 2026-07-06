@@ -79,6 +79,7 @@ class ScanWorker(QThread):
         self._amp = np.full((_N_HARMONICS, nb_y, nb_x), float("nan"))
         self._phase = np.full((_N_HARMONICS, nb_y, nb_x), float("nan"))
         self._coords = np.full((nb_y, nb_x, 2), float("nan"))
+        self._coords_pulses = np.full((nb_y, nb_x, 2), float("nan"))
 
     # ------------------------------------------------------------------
 
@@ -96,6 +97,8 @@ class ScanWorker(QThread):
             self._phase[:, iy, ix] = sample.o_phase
             self._coords[iy, ix, 0] = sample.xy_nm[0]
             self._coords[iy, ix, 1] = sample.xy_nm[1]
+            self._coords_pulses[iy, ix, 0] = sample.xy_pulses[0]
+            self._coords_pulses[iy, ix, 1] = sample.xy_pulses[1]
             self._done += 1
             self.point_done.emit(ix, iy, sample.o_amp.copy(), sample.o_phase.copy())
             self.progress.emit(self._done, total)
@@ -160,7 +163,7 @@ class ScanWorker(QThread):
         }
 
         try:
-            save_scan_h5(path, self._amp, self._phase, self._coords, meta)
+            save_scan_h5(path, self._amp, self._phase, self._coords, self._coords_pulses, meta)
             self.log_message.emit(f"Saved: {path}")
             return str(path)
         except Exception as exc:  # noqa: BLE001
