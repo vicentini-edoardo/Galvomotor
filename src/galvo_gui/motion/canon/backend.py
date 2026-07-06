@@ -24,12 +24,17 @@ class CanonGalvoBackend(RealGalvoBackend):
     def __init__(
         self,
         cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH),
+        *,
+        axis_follow_tolerance_pulses: int = 5,
         rs232: CanonRS232 | None = None,
         board_index: int | None = None,
         program_file: str | None = None,
         serial_port: str | None = None,
     ) -> None:
-        super().__init__(cal_files_path)
+        super().__init__(
+            cal_files_path,
+            axis_follow_tolerance_pulses=axis_follow_tolerance_pulses,
+        )
         self._backend_label = "Canon"
         self._rs232 = rs232 or CanonRS232()
         self._board_index = board_index

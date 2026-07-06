@@ -66,6 +66,7 @@ _MOVE_FOLLOW_POLL_S = 0.02
 _OFFSET_CALIBRATION_REPEATS = 3
 _OFFSET_CALIBRATION_NOISE_P = 20.0
 _OFFSET_CALIBRATION_STEP_P = 500.0
+_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 5
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
 # fine "read" pulses, while ctr_goto_xy expects coarser command units.  The
@@ -131,7 +132,12 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
     instantiation raises GalvoError if the module is missing.
     """
 
-    def __init__(self, cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH)) -> None:
+    def __init__(
+        self,
+        cal_files_path: str = str(_DEFAULT_CAL_FILES_PATH),
+        *,
+        axis_follow_tolerance_pulses: int = _DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES,
+    ) -> None:
         if not GALVO_AVAILABLE:
             raise GalvoError(
                 "galvo_functions not available. "
@@ -154,6 +160,7 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         self._cmd_gx: int | None = None
         self._cmd_gy: int | None = None
         self._x_goto_bias = _X_GOTO_BIAS
+        self._axis_follow_tolerance_pulses = max(1, int(axis_follow_tolerance_pulses))
         self._offset_x_p = 0.0
         self._offset_y_p = 0.0
         self._offset_enabled = True
@@ -549,8 +556,17 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         xb_after: int,
         yb_after: int,
     ) -> None:
-        x_tol_p = _axis_follow_tolerance_pulses(_GOTO_PER_READ_X)
-        y_tol_p = _axis_follow_tolerance_pulses(_GOTO_PER_READ_Y)
+        x_tol_p = max(
+            1,
+            int(
+                getattr(
+                    self,
+                    "_axis_follow_tolerance_pulses",
+                    _DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES,
+                )
+            ),
+        )
+        y_tol_p = x_tol_p
         if dx_p and abs(xb_after - x_target_p) > x_tol_p:
             raise GalvoError(
                 f"X axis read-back missed the commanded pulse target: requested "

@@ -537,6 +537,7 @@ def test_galvo_section_persists_canon_settings(qapp: object) -> None:
     section = panel._galvo_section
     section._settings.clear()
     section._mode_combo.setCurrentIndex(section.MODE_CANON)
+    section._tolerance_edit.setText("9")
     section._serial_port_edit.setText("COM8")
     section._board_index_edit.setText("3")
     section._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
@@ -545,6 +546,7 @@ def test_galvo_section_persists_canon_settings(qapp: object) -> None:
     restored = ConnectionPanel()._galvo_section
 
     assert restored._mode_combo.currentIndex() == section.MODE_CANON
+    assert restored._tolerance_edit.text() == "9"
     assert restored._serial_port_edit.text() == "COM8"
     assert restored._board_index_edit.text() == "3"
     assert restored._program_file_edit.text() == r"C:\Canon\gb511_core0.hex"
@@ -571,12 +573,14 @@ def test_galvo_section_passes_canon_settings_to_canon_backend(qapp, monkeypatch)
             self,
             cal_files_path="",
             *,
+            axis_follow_tolerance_pulses=0,
             board_index=0,
             program_file=None,
             serial_port=None,
         ) -> None:
             captured["init"] = {
                 "cal_files_path": cal_files_path,
+                "axis_follow_tolerance_pulses": axis_follow_tolerance_pulses,
                 "board_index": board_index,
                 "program_file": program_file,
                 "serial_port": serial_port,
@@ -597,6 +601,7 @@ def test_galvo_section_passes_canon_settings_to_canon_backend(qapp, monkeypatch)
     section = panel._galvo_section
     section._mode_combo.setCurrentIndex(section.MODE_CANON)
     section._cal_edit.setText("/tmp/cal_files")
+    section._tolerance_edit.setText("7")
     section._serial_port_edit.setText("COM8")
     section._board_index_edit.setText("3")
     section._program_file_edit.setText(r"C:\Canon\gb511_core0.hex")
@@ -605,6 +610,7 @@ def test_galvo_section_passes_canon_settings_to_canon_backend(qapp, monkeypatch)
 
     assert captured["init"] == {
         "cal_files_path": "/tmp/cal_files",
+        "axis_follow_tolerance_pulses": 7,
         "board_index": 3,
         "program_file": r"C:\Canon\gb511_core0.hex",
         "serial_port": "COM8",
@@ -623,6 +629,7 @@ def test_galvo_section_does_not_force_invalid_canon_board_index(qapp, monkeypatc
             self,
             cal_files_path="",
             *,
+            axis_follow_tolerance_pulses=0,
             board_index=None,
             program_file=None,
             serial_port=None,
@@ -648,6 +655,47 @@ def test_galvo_section_does_not_force_invalid_canon_board_index(qapp, monkeypatc
     _process_until(qapp, lambda: section._backend is not None)
 
     assert captured["board_index"] is None
+
+
+def test_galvo_section_passes_tolerance_to_real_backend(qapp, monkeypatch) -> None:
+    import galvo_gui.motion.galvo_nea as galvo_nea_module
+
+    captured = {}
+
+    class FakeRealBackend:
+        def __init__(self, cal_files_path="", *, axis_follow_tolerance_pulses=0) -> None:
+            captured["init"] = {
+                "cal_files_path": cal_files_path,
+                "axis_follow_tolerance_pulses": axis_follow_tolerance_pulses,
+            }
+
+        def connect(self, host="") -> None:
+            return None
+
+        def disconnect(self) -> None:
+            return None
+
+        def is_connected(self) -> bool:
+            return True
+
+        def set_offset_correction_enabled(self, enabled: bool) -> None:
+            return None
+
+    monkeypatch.setattr(galvo_nea_module, "GALVO_AVAILABLE", True)
+    monkeypatch.setattr(galvo_nea_module, "RealGalvoBackend", FakeRealBackend)
+
+    panel = ConnectionPanel()
+    section = panel._galvo_section
+    section._mode_combo.setCurrentIndex(section.MODE_GB511)
+    section._cal_edit.setText("/tmp/cal_files")
+    section._tolerance_edit.setText("8")
+    section._connect()
+    _process_until(qapp, lambda: section._backend is not None)
+
+    assert captured["init"] == {
+        "cal_files_path": "/tmp/cal_files",
+        "axis_follow_tolerance_pulses": 8,
+    }
 
 
 def test_galvo_section_manual_calibration_runs_off_the_gui_thread(qapp, monkeypatch) -> None:

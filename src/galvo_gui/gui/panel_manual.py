@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMetaObject, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QAction, QDoubleValidator
+from PyQt6.QtGui import QAction, QDoubleValidator, QIntValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,6 +42,7 @@ from galvo_gui.motion.base import (
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
 _MOVE_LOG_PATH = Path(__file__).resolve().parents[3] / "config_files" / "move_history.log"
 _MOVE_LOG_LIMIT = 100
+_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = "5"
 
 
 def _stop_thread(thread: QThread) -> None:
@@ -496,29 +497,38 @@ class GalvoConnectionSection(_ConnectionSection):
             browse_btn,
         ]
 
-        grid.addWidget(QLabel("Serial port:"), 2, 0)
+        grid.addWidget(QLabel("Tolerance (pulses):"), 2, 0)
+        self._tolerance_edit = QLineEdit(_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES)
+        self._tolerance_edit.setValidator(QIntValidator(1, 1_000_000, self))
+        grid.addWidget(self._tolerance_edit, 2, 1, 1, 2)
+        self._tolerance_row_widgets = [
+            grid.itemAtPosition(2, 0).widget(),  # type: ignore[union-attr]
+            self._tolerance_edit,
+        ]
+
+        grid.addWidget(QLabel("Serial port:"), 3, 0)
         self._serial_port_edit = QLineEdit("")
-        grid.addWidget(self._serial_port_edit, 2, 1, 1, 2)
+        grid.addWidget(self._serial_port_edit, 3, 1, 1, 2)
 
-        grid.addWidget(QLabel("Board index:"), 3, 0)
+        grid.addWidget(QLabel("Board index:"), 4, 0)
         self._board_index_edit = QLineEdit("1")
-        grid.addWidget(self._board_index_edit, 3, 1, 1, 2)
+        grid.addWidget(self._board_index_edit, 4, 1, 1, 2)
 
-        grid.addWidget(QLabel("Program file:"), 4, 0)
+        grid.addWidget(QLabel("Program file:"), 5, 0)
         self._program_file_edit = QLineEdit("")
         self._program_file_edit.setPlaceholderText("blank = config_files/gbdsp.hex")
-        grid.addWidget(self._program_file_edit, 4, 1, 1, 2)
+        grid.addWidget(self._program_file_edit, 5, 1, 1, 2)
 
         self._canon_row_widgets = [
-            grid.itemAtPosition(2, 0).widget(),  # type: ignore[union-attr]
-            self._serial_port_edit,
             grid.itemAtPosition(3, 0).widget(),  # type: ignore[union-attr]
-            self._board_index_edit,
+            self._serial_port_edit,
             grid.itemAtPosition(4, 0).widget(),  # type: ignore[union-attr]
+            self._board_index_edit,
+            grid.itemAtPosition(5, 0).widget(),  # type: ignore[union-attr]
             self._program_file_edit,
         ]
         self._on_mode_changed(0)
-        return 5
+        return 6
 
     def _build_extra_controls(self, grid: QGridLayout, row: int) -> int:
         controls = QWidget(self)
@@ -540,6 +550,8 @@ class GalvoConnectionSection(_ConnectionSection):
         is_canon = index == self.MODE_CANON
         for widget in self._cal_row_widgets:
             widget.setVisible(is_real)
+        for widget in self._tolerance_row_widgets:
+            widget.setVisible(is_real)
         for widget in self._canon_row_widgets:
             widget.setVisible(is_canon)
         self._update_calibration_controls()
@@ -555,6 +567,15 @@ class GalvoConnectionSection(_ConnectionSection):
 
     def _set_fields_enabled(self, enabled: bool) -> None:
         self._mode_combo.setEnabled(enabled)
+        self._tolerance_edit.setEnabled(enabled)
+
+    def _axis_follow_tolerance_pulses_value(self) -> int:
+        text = self._tolerance_edit.text().strip()
+        with contextlib.suppress(ValueError):
+            value = int(text)
+            if value > 0:
+                return value
+        return int(_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES)
 
     def _after_connection_state_changed(self) -> None:
         self._update_calibration_controls()
@@ -578,7 +599,10 @@ class GalvoConnectionSection(_ConnectionSection):
                 )
                 return MockGalvoBackend(), "Simulated galvo (fallback)"
             try:
-                return RealGalvoBackend(self._cal_edit.text()), "Galvo (GB511)"
+                return RealGalvoBackend(
+                    self._cal_edit.text(),
+                    axis_follow_tolerance_pulses=self._axis_follow_tolerance_pulses_value(),
+                ), "Galvo (GB511)"
             except Exception as exc:  # noqa: BLE001
                 self.message.emit(f"Connection failed: {exc}")
                 return None, ""
@@ -594,6 +618,7 @@ class GalvoConnectionSection(_ConnectionSection):
         try:
             backend = CanonGalvoBackend(
                 self._cal_edit.text(),
+                axis_follow_tolerance_pulses=self._axis_follow_tolerance_pulses_value(),
                 board_index=board_index,
                 program_file=program_file,
                 serial_port=serial_port,
@@ -610,6 +635,11 @@ class GalvoConnectionSection(_ConnectionSection):
         cal = s.value("cal_path", str(_DEFAULT_CAL_DIR))
         if isinstance(cal, str):
             self._cal_edit.setText(cal)
+        tolerance = s.value("axis_follow_tolerance_pulses", _DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES)
+        if isinstance(tolerance, str):
+            self._tolerance_edit.setText(tolerance)
+        else:
+            self._tolerance_edit.setText(str(tolerance))
         serial_port = s.value("canon_serial_port", "")
         if isinstance(serial_port, str):
             self._serial_port_edit.setText(serial_port)
@@ -629,6 +659,7 @@ class GalvoConnectionSection(_ConnectionSection):
         s = self._settings
         s.setValue("mode_index", self._mode_combo.currentIndex())
         s.setValue("cal_path", self._cal_edit.text())
+        s.setValue("axis_follow_tolerance_pulses", self._tolerance_edit.text())
         s.setValue("canon_serial_port", self._serial_port_edit.text())
         s.setValue("canon_board_index", self._board_index_edit.text())
         s.setValue("canon_program_file", self._program_file_edit.text())

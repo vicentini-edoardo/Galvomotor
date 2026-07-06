@@ -240,6 +240,30 @@ def test_move_relative_accepts_small_x_readback_quantisation_error(monkeypatch) 
     backend.move_relative(100.0, 0.0)
 
 
+def test_validate_axis_follow_uses_configured_tolerance() -> None:
+    backend = _make_galvo(galvo=_FakeGalvo())
+    backend._axis_follow_tolerance_pulses = 7
+
+    backend._validate_axis_follow(
+        100.0,
+        0.0,
+        1100.0,
+        2000.0,
+        1106,
+        2000,
+    )
+
+    with pytest.raises(GalvoError, match="X axis read-back"):
+        backend._validate_axis_follow(
+            100.0,
+            0.0,
+            1100.0,
+            2000.0,
+            1108,
+            2000,
+        )
+
+
 def test_move_relative_applies_configured_x_goto_bias(monkeypatch) -> None:
     monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
     wrapper = _FakeWrapper()
