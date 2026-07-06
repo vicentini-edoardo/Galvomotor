@@ -279,6 +279,14 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
                 f"stayed at ({xb_before}, {yb_before}) pulses. The axis may be at its "
                 "range limit — recenter with GoHome (⊙) and retry."
             )
+        self._validate_axis_follow(
+            dx_p,
+            dy_p,
+            gx_target,
+            gy_target,
+            xb_after,
+            yb_after,
+        )
 
     @staticmethod
     def _parked_goto(commanded: int | None, fallback: int) -> int:
@@ -357,6 +365,30 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         x_p = xb - self._galvo.K * self._galvo.X0
         y_p = yb - self._galvo.K * self._galvo.Y0
         return (float(x_p), float(y_p))
+
+    def _validate_axis_follow(
+        self,
+        dx_p: float,
+        dy_p: float,
+        gx_target: int,
+        gy_target: int,
+        xb_after: int,
+        yb_after: int,
+    ) -> None:
+        achieved_gx = round(_GOTO_PER_READ_X * xb_after)
+        achieved_gy = round(_GOTO_PER_READ_Y * yb_after)
+        if dx_p and achieved_gx != gx_target:
+            raise GalvoError(
+                f"X axis read-back missed the commanded pulse target: requested "
+                f"goto {gx_target}, read back {achieved_gx}. The axis may be at its "
+                "movement boundary — recenter with GoHome (⊙) and retry."
+            )
+        if dy_p and achieved_gy != gy_target:
+            raise GalvoError(
+                f"Y axis read-back missed the commanded pulse target: requested "
+                f"goto {gy_target}, read back {achieved_gy}. The axis may be at its "
+                "movement boundary — recenter with GoHome (⊙) and retry."
+            )
 
     def _current_home_xy_pulses(self) -> Tuple[float, float]:
         return (float(getattr(self, "_home_x_p", 0.0)), float(getattr(self, "_home_y_p", 0.0)))

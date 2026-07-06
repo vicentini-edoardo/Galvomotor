@@ -39,6 +39,8 @@ from galvo_gui.motion.base import (
 )
 
 _DEFAULT_CAL_DIR = Path(__file__).resolve().parents[3] / "config_files" / "cal_files"
+_MOVE_LOG_PATH = Path(__file__).resolve().parents[3] / "config_files" / "move_history.log"
+_MOVE_LOG_LIMIT = 100
 
 
 def _stop_thread(thread: QThread) -> None:
@@ -51,6 +53,20 @@ def _safe_stop_thread(thread: QThread) -> None:
     # The QThread's C++ object may already be gone during interpreter teardown.
     with contextlib.suppress(RuntimeError):
         _stop_thread(thread)
+
+
+def _append_move_history(message: str) -> None:
+    _MOVE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if _MOVE_LOG_PATH.exists():
+        with _MOVE_LOG_PATH.open("r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    lines.append(message)
+    lines = lines[-_MOVE_LOG_LIMIT:]
+    with _MOVE_LOG_PATH.open("w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+        if lines:
+            fh.write("\n")
 
 
 class _BackendOpRunner(QObject):
@@ -972,7 +988,18 @@ class MotionPanel(QWidget):
             return
         step_p = float(self._xy_step_combo.currentData())
         try:
+            before_x_p, before_y_p = self._current_xy_from_origin_pulses()
             self._galvo_backend.move_relative_pulses(sign_x * step_p, sign_y * step_p)
+            after_x_p, after_y_p = self._current_xy_from_origin_pulses()
+            self._log_xy_move(
+                "jog",
+                sign_x * step_p,
+                sign_y * step_p,
+                before_x_p,
+                before_y_p,
+                after_x_p,
+                after_y_p,
+            )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Move error: {exc}")
@@ -991,7 +1018,18 @@ class MotionPanel(QWidget):
         if self._galvo_backend is None:
             return
         try:
+            before_x_p, before_y_p = self._current_xy_from_origin_pulses()
             self._galvo_backend.goto_center()
+            after_x_p, after_y_p = self._current_xy_from_origin_pulses()
+            self._log_xy_move(
+                "center",
+                after_x_p - before_x_p,
+                after_y_p - before_y_p,
+                before_x_p,
+                before_y_p,
+                after_x_p,
+                after_y_p,
+            )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001 — DLL/SDK errors must reach the log
             self.log_message.emit(f"Center error: {exc}")
@@ -1021,8 +1059,18 @@ class MotionPanel(QWidget):
             return
         try:
             current_x_p, current_y_p = self._current_xy_from_origin_pulses()
-            self._galvo_backend.move_relative_pulses(
-                target_x_p - current_x_p, target_y_p - current_y_p
+            dx_p = target_x_p - current_x_p
+            dy_p = target_y_p - current_y_p
+            self._galvo_backend.move_relative_pulses(dx_p, dy_p)
+            after_x_p, after_y_p = self._current_xy_from_origin_pulses()
+            self._log_xy_move(
+                "goto",
+                dx_p,
+                dy_p,
+                current_x_p,
+                current_y_p,
+                after_x_p,
+                after_y_p,
             )
             self._refresh_position()
         except Exception as exc:  # noqa: BLE001
@@ -1072,6 +1120,36 @@ class MotionPanel(QWidget):
         if msg != self._last_position_error:
             self._last_position_error = msg
             self.log_message.emit(msg)
+
+    def _log_xy_move(
+        self,
+        kind: str,
+        dx_p: float,
+        dy_p: float,
+        before_x_p: float,
+        before_y_p: float,
+        after_x_p: float,
+        after_y_p: float,
+    ) -> None:
+        direction = self._format_xy_direction(dx_p, dy_p)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _append_move_history(
+            f"{stamp} kind={kind} step=({dx_p:.0f},{dy_p:.0f}) pulses "
+            f"direction={direction} before=({before_x_p:.0f},{before_y_p:.0f}) "
+            f"after=({after_x_p:.0f},{after_y_p:.0f})"
+        )
+
+    @staticmethod
+    def _format_xy_direction(dx_p: float, dy_p: float) -> str:
+        if dx_p > 0:
+            return "right"
+        if dx_p < 0:
+            return "left"
+        if dy_p > 0:
+            return "up"
+        if dy_p < 0:
+            return "down"
+        return "none"
 
     # ------------------------------------------------------------------
     # Step availability + enablement

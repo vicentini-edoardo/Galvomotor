@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -10,6 +12,7 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication, QLabel
 
 from galvo_gui.gui.main_window import MainWindow
+from galvo_gui.gui import panel_manual
 from galvo_gui.gui.panel_manual import ConnectionPanel, MotionPanel
 
 
@@ -185,6 +188,29 @@ def test_motion_panel_can_switch_xy_units_to_pulses(qapp: object) -> None:
     assert backend.read_xy_nm() == (100.0, -50.0)
     assert panel._x_label.text() == "100"
     assert panel._y_label.text() == "-50"
+
+
+def test_motion_panel_writes_xy_move_history_file_and_keeps_last_100(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    panel = MotionPanel()
+    backend, _nea = _connect_mocks(panel)
+    log_path = tmp_path / "move_history.log"
+    monkeypatch.setattr(panel_manual, "_MOVE_LOG_PATH", log_path)
+
+    for _ in range(101):
+        panel._jog_xy(1, 0)
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+
+    assert len(lines) == 100
+    assert "kind=jog" in lines[-1]
+    assert "direction=right" in lines[-1]
+    assert "step=(100,0) pulses" in lines[-1]
+    assert "before=(100,0)" in lines[0]
+    assert "after=(200,0)" in lines[0]
+    assert "after=(10100,0)" in lines[-1]
+    assert backend.read_xy_pulses() == (10100.0, 0.0)
 
 
 def test_motion_panel_set_origin_references_home_from_new_origin(qapp: object) -> None:
