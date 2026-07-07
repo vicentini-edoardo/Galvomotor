@@ -1,4 +1,4 @@
-"""Atomic HDF5 save for galvo scan results."""
+"""Atomic save helpers for galvo scan results."""
 
 from __future__ import annotations
 
@@ -11,6 +11,54 @@ import h5py
 import numpy as np
 
 _N_HARMONICS = 6
+
+
+def _write_text_scan(
+    path: Path,
+    amp: np.ndarray,
+    phase: np.ndarray,
+    coords_pulses: np.ndarray,
+    metadata: Dict[str, Any],
+) -> None:
+    """Write a companion text export with metadata header and one row per pixel."""
+    tmp_path = path.parent / (path.name + ".tmp")
+
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            for key, value in metadata.items():
+                fh.write(f"# {key}: {value}\n")
+
+            header = ["#row", "#col", "x_pulse", "y_pulse"]
+            for h in range(_N_HARMONICS):
+                header.extend((f"O{h}A", f"O{h}P"))
+            fh.write("# " + " - ".join(header) + "\n")
+
+            ny, nx = coords_pulses.shape[:2]
+            for iy in range(ny):
+                for ix in range(nx):
+                    row = [
+                        str(iy),
+                        str(ix),
+                        f"{float(coords_pulses[iy, ix, 0]):.10g}",
+                        f"{float(coords_pulses[iy, ix, 1]):.10g}",
+                    ]
+                    for h in range(_N_HARMONICS):
+                        row.extend(
+                            (
+                                f"{float(amp[h, iy, ix]):.10g}",
+                                f"{float(phase[h, iy, ix]):.10g}",
+                            )
+                        )
+                    fh.write(" - ".join(row) + "\n")
+
+        if os.name == "nt" and tmp_path.exists() and path.exists():
+            path.unlink()
+        tmp_path.replace(path)
+    except Exception:
+        import contextlib
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
 
 
 def save_scan_h5(
@@ -63,3 +111,16 @@ def save_scan_h5(
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         raise
+
+
+def save_scan_text(
+    path: str | Path,
+    amp: np.ndarray,
+    phase: np.ndarray,
+    coords_pulses: np.ndarray,
+    metadata: Dict[str, Any],
+) -> None:
+    """Write a companion text export atomically."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_scan(path, amp, phase, coords_pulses, metadata)

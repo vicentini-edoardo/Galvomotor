@@ -114,7 +114,7 @@ def test_z_motion_and_available_steps() -> None:
     b = MockNeaBackend()
     b.connect()
 
-    assert b.available_z_steps_nm() == (10.0, 100.0, 1000.0, 10000.0)
+    assert b.available_z_steps_nm() == (50.0, 100.0, 200.0, 300.0, 500.0, 1000.0)
 
     b.move_z_relative(10.0)
     assert abs(b.read_z_nm() - 10.0) < 1e-9

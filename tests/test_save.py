@@ -1,4 +1,4 @@
-"""Tests for io/save.py HDF5 write and round-trip."""
+"""Tests for io/save.py save helpers and round-trip."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import h5py
 import numpy as np
 import pytest
 
-from galvo_gui.io.save import save_scan_h5
+from galvo_gui.io.save import save_scan_h5, save_scan_text
 
 
 def _make_arrays(ny: int = 4, nx: int = 5) -> tuple:
@@ -74,3 +74,27 @@ def test_atomic_on_error(tmp_path: Any) -> None:  # noqa: F821
 
     assert not path.exists()
     assert not (path.parent / (path.name + ".tmp")).exists()
+
+
+def test_text_export_contains_metadata_and_rows(tmp_path: Any) -> None:  # noqa: F821
+    amp, phase, coords = _make_arrays(2, 3)
+    coords_pulses = coords * 0.1108
+    meta = {"dx_pulses": 500.0, "nb_x": 3}
+    path = tmp_path / "scan.txt"
+
+    save_scan_text(path, amp, phase, coords_pulses, meta)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "# dx_pulses: 500.0"
+    assert lines[1] == "# nb_x: 3"
+    assert lines[2].startswith("# #row - #col - x_pulse - y_pulse - O0A - O0P")
+    assert len(lines) == 3 + (2 * 3)
+
+    fields = lines[3].split(" - ")
+    assert fields[0] == "0"
+    assert fields[1] == "0"
+    assert len(fields) == 4 + (6 * 2)
+
+    second_row_fields = lines[6].split(" - ")
+    assert second_row_fields[0] == "1"
+    assert second_row_fields[1] == "0"

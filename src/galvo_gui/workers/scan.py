@@ -142,14 +142,15 @@ class ScanWorker(QThread):
     # ------------------------------------------------------------------
 
     def _save(self) -> str:
-        """Write results to HDF5 (atomic: .tmp then rename). Returns path or ''."""
-        from galvo_gui.io.save import save_scan_h5  # avoid circular at import time
+        """Write results to disk. Returns HDF5 path or '' on failure."""
+        from galvo_gui.io.save import save_scan_h5, save_scan_text  # avoid circular at import time
 
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         fname = self._filename if self._filename.endswith(".h5") else f"{self._filename}.h5"
         # Insert timestamp before extension to avoid overwrite
         stem = fname[:-3]
         path = Path(self._save_dir) / f"{stem}_{now}.h5"
+        text_path = path.with_suffix(".txt")
 
         meta = {
             "dx_pulses": self._dx_pulses,
@@ -164,7 +165,9 @@ class ScanWorker(QThread):
 
         try:
             save_scan_h5(path, self._amp, self._phase, self._coords, self._coords_pulses, meta)
+            save_scan_text(text_path, self._amp, self._phase, self._coords_pulses, meta)
             self.log_message.emit(f"Saved: {path}")
+            self.log_message.emit(f"Saved: {text_path}")
             return str(path)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Save failed: {exc}")

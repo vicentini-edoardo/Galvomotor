@@ -68,10 +68,12 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
         "1000",
     ]
     assert [panel._z_step_combo.itemText(i) for i in range(panel._z_step_combo.count())] == [
-        "10",
+        "50",
         "100",
+        "200",
+        "300",
+        "500",
         "1000",
-        "10000",
     ]
     assert panel._btn_z_up.text() == "▲"
     assert panel._btn_z_down.text() == "▼"
@@ -131,7 +133,7 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
     panel = MotionPanel()
     panel._settings.clear()
     panel._xy_step_combo.setCurrentText("10")
-    panel._z_step_combo.setCurrentText("10000")
+    panel._z_step_combo.setCurrentText("1000")
     backend = MockGalvoBackend()
     backend.connect()
     backend.move_relative_pulses(250.0, -125.0)
@@ -142,7 +144,7 @@ def test_motion_panel_persists_selected_steps_and_home(qapp: object) -> None:
     restored = MotionPanel()
 
     assert restored._xy_step_combo.currentText() == "10"
-    assert restored._z_step_combo.currentText() == "10000"
+    assert restored._z_step_combo.currentText() == "1000"
     assert restored._home_x_p == 250.0
     assert restored._home_y_p == -125.0
     assert restored._home_label.text() == "250, -125"

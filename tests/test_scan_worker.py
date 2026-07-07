@@ -51,6 +51,7 @@ def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  
 
     assert not errors, f"Worker errors: {errors}"
     assert len(finished_paths) == 1
+    text_path = finished_paths[0].replace(".h5", ".txt")
 
     # Verify HDF5 contents
     with h5py.File(finished_paths[0], "r") as h5:
@@ -62,6 +63,14 @@ def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  
         metadata = json.loads(h5.attrs["metadata"])
         assert metadata["dx_pulses"] == 300.0
         assert metadata["dy_pulses"] == 300.0
+
+    text_lines = open(text_path, encoding="utf-8").read().splitlines()
+    assert text_lines[0] == "# dx_pulses: 300.0"
+    assert text_lines[1] == "# dy_pulses: 300.0"
+    assert any(
+        line.startswith("# #row - #col - x_pulse - y_pulse - O0A - O0P")
+        for line in text_lines
+    )
 
     galvo.disconnect()
     nea.disconnect()
