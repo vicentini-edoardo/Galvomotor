@@ -79,7 +79,16 @@ def test_atomic_on_error(tmp_path: Any) -> None:  # noqa: F821
 def test_text_export_contains_metadata_and_rows(tmp_path: Any) -> None:  # noqa: F821
     amp, phase, coords = _make_arrays(2, 3)
     coords_pulses = coords * 0.1108
-    meta = {"dx_pulses": 500.0, "nb_x": 3}
+    meta = {
+        "dx_pulses": 500.0,
+        "nb_x": 3,
+        "position_conversion_factor_parameters": {
+            "pulses_per_nm": 1.0,
+            "nm_per_pulse": 1.0,
+            "x_nm_expression": "x_nm = x_pulse / 1",
+            "y_nm_expression": "y_nm = y_pulse / 1",
+        },
+    }
     path = tmp_path / "scan.txt"
 
     save_scan_text(path, amp, phase, coords_pulses, meta)
@@ -87,14 +96,19 @@ def test_text_export_contains_metadata_and_rows(tmp_path: Any) -> None:  # noqa:
     lines = path.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "# dx_pulses: 500.0"
     assert lines[1] == "# nb_x: 3"
-    assert lines[2].startswith("# #row - #col - x_pulse - y_pulse - O0A - O0P")
-    assert len(lines) == 3 + (2 * 3)
+    assert lines[2] == "# position_conversion_factor_parameters:"
+    assert lines[3] == "#   pulses_per_nm: 1.0"
+    assert lines[4] == "#   nm_per_pulse: 1.0"
+    assert lines[5] == "#   x_nm_expression: x_nm = x_pulse / 1"
+    assert lines[6] == "#   y_nm_expression: y_nm = y_pulse / 1"
+    assert lines[7].startswith("# #row - #col - x_pulse - y_pulse - O0A - O0P")
+    assert len(lines) == 8 + (2 * 3)
 
-    fields = lines[3].split(" - ")
+    fields = lines[8].split(" - ")
     assert fields[0] == "0"
     assert fields[1] == "0"
     assert len(fields) == 4 + (6 * 2)
 
-    second_row_fields = lines[6].split(" - ")
+    second_row_fields = lines[11].split(" - ")
     assert second_row_fields[0] == "1"
     assert second_row_fields[1] == "0"

@@ -151,6 +151,8 @@ class ScanWorker(QThread):
         stem = fname[:-3]
         path = Path(self._save_dir) / f"{stem}_{now}.h5"
         text_path = path.with_suffix(".txt")
+        pulses_per_nm = float(self._galvo.pulses_per_nm())
+        nm_per_pulse = 1.0 / pulses_per_nm if pulses_per_nm else float("inf")
 
         meta = {
             "dx_pulses": self._dx_pulses,
@@ -161,6 +163,12 @@ class ScanWorker(QThread):
             "t_integ_s": self._t_integ_s,
             "timestamp": now,
             "pixels_acquired": int(self._done),
+            "position_conversion_factor_parameters": {
+                "pulses_per_nm": pulses_per_nm,
+                "nm_per_pulse": nm_per_pulse,
+                "x_nm_expression": f"x_nm = x_pulse / {pulses_per_nm:.12g}",
+                "y_nm_expression": f"y_nm = y_pulse / {pulses_per_nm:.12g}",
+            },
         }
 
         try:

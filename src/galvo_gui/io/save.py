@@ -26,7 +26,12 @@ def _write_text_scan(
     try:
         with tmp_path.open("w", encoding="utf-8") as fh:
             for key, value in metadata.items():
-                fh.write(f"# {key}: {value}\n")
+                if isinstance(value, dict):
+                    fh.write(f"# {key}:\n")
+                    for sub_key, sub_value in value.items():
+                        fh.write(f"#   {sub_key}: {sub_value}\n")
+                else:
+                    fh.write(f"# {key}: {value}\n")
 
             header = ["#row", "#col", "x_pulse", "y_pulse"]
             for h in range(_N_HARMONICS):

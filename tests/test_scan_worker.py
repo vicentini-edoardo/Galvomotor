@@ -67,6 +67,9 @@ def test_scan_worker_end_to_end(tmp_path: Any, qapp: Any, qtbot: Any) -> None:  
     text_lines = open(text_path, encoding="utf-8").read().splitlines()
     assert text_lines[0] == "# dx_pulses: 300.0"
     assert text_lines[1] == "# dy_pulses: 300.0"
+    assert any(line == "# position_conversion_factor_parameters:" for line in text_lines)
+    assert any(line == "#   pulses_per_nm: 1.0" for line in text_lines)
+    assert any(line == "#   x_nm_expression: x_nm = x_pulse / 1" for line in text_lines)
     assert any(
         line.startswith("# #row - #col - x_pulse - y_pulse - O0A - O0P")
         for line in text_lines
