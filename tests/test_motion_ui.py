@@ -11,8 +11,8 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication, QLabel
 
-from galvo_gui.gui.main_window import MainWindow
 from galvo_gui.gui import panel_manual
+from galvo_gui.gui.main_window import MainWindow
 from galvo_gui.gui.panel_manual import ConnectionPanel, MotionPanel
 from galvo_gui.gui.panel_scan import ScanPanel
 
@@ -76,9 +76,11 @@ def test_motion_panel_uses_step_combos_and_has_z_controls(qapp: object) -> None:
     assert panel._btn_z_up.text() == "▲"
     assert panel._btn_z_down.text() == "▼"
     assert panel._btn_set_home.text() == "Set Home"
+    assert panel._btn_run_calibration.text() == "Run Calibration"
     assert panel._btn_go_xy.text() == "Go"
     assert not panel._xy_step_combo.isEnabled()
     assert not panel._z_step_combo.isEnabled()
+    assert not panel._btn_run_calibration.isEnabled()
 
 
 def test_xy_controls_need_galvo_and_z_controls_need_nea(qapp: object) -> None:
@@ -361,7 +363,6 @@ def test_galvo_section_has_calibration_controls_and_persists_preference(qapp: ob
     section._settings.clear()
 
     assert not section._offset_checkbox.isEnabled()
-    assert not section._rerun_calibration_btn.isEnabled()
 
     section._offset_checkbox.setChecked(False)
     section.save_settings()
@@ -709,7 +710,6 @@ def test_galvo_section_manual_calibration_runs_off_the_gui_thread(qapp, monkeypa
     backend.connect()
     section._backend = backend
     section._offset_checkbox.setEnabled(True)
-    section._rerun_calibration_btn.setEnabled(True)
 
     call_threads: list[int] = []
 
@@ -723,3 +723,57 @@ def test_galvo_section_manual_calibration_runs_off_the_gui_thread(qapp, monkeypa
     _process_until(qapp, lambda: bool(call_threads))
 
     assert call_threads[0] != threading.get_ident()
+
+
+def test_main_window_moves_manual_calibration_command_to_motion_panel(qapp, monkeypatch) -> None:
+    import threading
+
+    win = MainWindow()
+    section = win._connection._galvo_section
+
+    class CalibratingBackend:
+        def __init__(self) -> None:
+            self._connected = True
+            self.calibration_threads: list[int] = []
+
+        def is_connected(self) -> bool:
+            return self._connected
+
+        def disconnect(self) -> None:
+            self._connected = False
+
+        def run_offset_calibration(self) -> tuple[float, float]:
+            self.calibration_threads.append(threading.get_ident())
+            return (12.0, -8.0)
+
+        def set_offset_correction_enabled(self, enabled: bool) -> None:
+            return None
+
+        def available_xy_steps_pulses(self) -> tuple[float, ...]:
+            return (10.0, 100.0)
+
+        def pulses_per_nm(self) -> float:
+            return 1.0
+
+        def set_home_pulses(self, x_p: float, y_p: float) -> None:
+            return None
+
+        def read_xy_pulses(self) -> tuple[float, float]:
+            return (0.0, 0.0)
+
+    backend = CalibratingBackend()
+    section._mode_combo.setCurrentIndex(section.MODE_GB511)
+    section._backend = backend
+    win._motion.set_galvo_backend(backend)  # type: ignore[arg-type]
+    section._after_connection_state_changed()
+
+    assert win._motion._btn_run_calibration.isEnabled()
+
+    win._motion._btn_run_calibration.click()
+    assert win._motion._btn_run_calibration.text() == "Calibrating…"
+
+    _process_until(qapp, lambda: bool(backend.calibration_threads))
+    _process_until(qapp, lambda: win._motion._btn_run_calibration.text() == "Run Calibration")
+
+    assert backend.calibration_threads[0] != threading.get_ident()
+    assert "Offset calibration updated: X=12, Y=-8 pulses." in win._connection._log.toPlainText()

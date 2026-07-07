@@ -165,10 +165,23 @@ class MainWindow(QMainWindow):
         self._connection.galvo_connected.connect(self._scan.set_galvo_backend)
         self._connection.galvo_disconnected.connect(self._motion.clear_galvo_backend)
         self._connection.galvo_disconnected.connect(self._scan.clear_galvo_backend)
+        self._connection.galvo_disconnected.connect(
+            lambda: self._motion.set_manual_calibration_available(False)
+        )
         self._connection.nea_connected.connect(self._motion.set_nea_backend)
         self._connection.nea_connected.connect(self._scan.set_nea_backend)
         self._connection.nea_disconnected.connect(self._motion.clear_nea_backend)
         self._connection.nea_disconnected.connect(self._scan.clear_nea_backend)
+        self._connection.galvo_calibration_enabled_changed.connect(
+            self._motion.set_manual_calibration_available
+        )
+        self._connection.galvo_calibration_started.connect(
+            lambda: self._motion.set_manual_calibration_busy(True)
+        )
+        self._connection.galvo_calibration_finished.connect(
+            lambda: self._motion.set_manual_calibration_busy(False)
+        )
+        self._motion.manual_calibration_requested.connect(self._connection.run_galvo_calibration)
 
         # Lock jog controls during scan
         self._scan.running_changed.connect(self._motion.lock_for_scan)

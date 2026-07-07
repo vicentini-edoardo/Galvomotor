@@ -467,6 +467,10 @@ class NeaConnectionSection(_ConnectionSection):
 class GalvoConnectionSection(_ConnectionSection):
     """Galvomotor connection: XY stage. Carries the driver-mode selector."""
 
+    calibration_enabled_changed = pyqtSignal(bool)
+    calibration_started = pyqtSignal()
+    calibration_finished = pyqtSignal()
+
     # Combo index → descriptive driver mode
     MODE_SIMULATED = 0
     MODE_GB511 = 1
@@ -484,47 +488,47 @@ class GalvoConnectionSection(_ConnectionSection):
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         grid.addWidget(self._mode_combo, 0, 1, 1, 2)
 
-        grid.addWidget(QLabel("Cal files:"), 1, 0)
+        grid.addWidget(QLabel("Serial port:"), 1, 0)
+        self._serial_port_edit = QLineEdit("")
+        grid.addWidget(self._serial_port_edit, 1, 1, 1, 2)
+
+        grid.addWidget(QLabel("Board index:"), 2, 0)
+        self._board_index_edit = QLineEdit("1")
+        grid.addWidget(self._board_index_edit, 2, 1, 1, 2)
+
+        grid.addWidget(QLabel("Program file:"), 3, 0)
+        self._program_file_edit = QLineEdit("")
+        self._program_file_edit.setPlaceholderText("blank = config_files/gbdsp.hex")
+        grid.addWidget(self._program_file_edit, 3, 1, 1, 2)
+
+        grid.addWidget(QLabel("Cal files:"), 4, 0)
         self._cal_edit = QLineEdit(str(_DEFAULT_CAL_DIR))
-        grid.addWidget(self._cal_edit, 1, 1)
+        grid.addWidget(self._cal_edit, 4, 1)
         browse_btn = QPushButton("…")
         browse_btn.setFixedWidth(30)
         browse_btn.clicked.connect(self._browse_cal)
-        grid.addWidget(browse_btn, 1, 2)
+        grid.addWidget(browse_btn, 4, 2)
         self._cal_row_widgets = [
-            grid.itemAtPosition(1, 0).widget(),  # type: ignore[union-attr]
+            grid.itemAtPosition(4, 0).widget(),  # type: ignore[union-attr]
             self._cal_edit,
             browse_btn,
         ]
 
-        grid.addWidget(QLabel("Tolerance (pulses):"), 2, 0)
+        grid.addWidget(QLabel("Tolerance (pulses):"), 5, 0)
         self._tolerance_edit = QLineEdit(_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES)
         self._tolerance_edit.setValidator(QIntValidator(1, 1_000_000, self))
-        grid.addWidget(self._tolerance_edit, 2, 1, 1, 2)
+        grid.addWidget(self._tolerance_edit, 5, 1, 1, 2)
         self._tolerance_row_widgets = [
-            grid.itemAtPosition(2, 0).widget(),  # type: ignore[union-attr]
+            grid.itemAtPosition(5, 0).widget(),  # type: ignore[union-attr]
             self._tolerance_edit,
         ]
 
-        grid.addWidget(QLabel("Serial port:"), 3, 0)
-        self._serial_port_edit = QLineEdit("")
-        grid.addWidget(self._serial_port_edit, 3, 1, 1, 2)
-
-        grid.addWidget(QLabel("Board index:"), 4, 0)
-        self._board_index_edit = QLineEdit("1")
-        grid.addWidget(self._board_index_edit, 4, 1, 1, 2)
-
-        grid.addWidget(QLabel("Program file:"), 5, 0)
-        self._program_file_edit = QLineEdit("")
-        self._program_file_edit.setPlaceholderText("blank = config_files/gbdsp.hex")
-        grid.addWidget(self._program_file_edit, 5, 1, 1, 2)
-
         self._canon_row_widgets = [
-            grid.itemAtPosition(3, 0).widget(),  # type: ignore[union-attr]
+            grid.itemAtPosition(1, 0).widget(),  # type: ignore[union-attr]
             self._serial_port_edit,
-            grid.itemAtPosition(4, 0).widget(),  # type: ignore[union-attr]
+            grid.itemAtPosition(2, 0).widget(),  # type: ignore[union-attr]
             self._board_index_edit,
-            grid.itemAtPosition(5, 0).widget(),  # type: ignore[union-attr]
+            grid.itemAtPosition(3, 0).widget(),  # type: ignore[union-attr]
             self._program_file_edit,
         ]
         self._on_mode_changed(0)
@@ -538,9 +542,6 @@ class GalvoConnectionSection(_ConnectionSection):
         self._offset_checkbox = QCheckBox("Apply offset correction")
         self._offset_checkbox.toggled.connect(self._on_offset_checkbox_toggled)
         layout.addWidget(self._offset_checkbox)
-        self._rerun_calibration_btn = QPushButton("Run calibration at current position")
-        self._rerun_calibration_btn.clicked.connect(self._rerun_offset_calibration)
-        layout.addWidget(self._rerun_calibration_btn)
         layout.addStretch()
         grid.addWidget(controls, row, 0, 1, 3)
         return row + 1
@@ -567,7 +568,11 @@ class GalvoConnectionSection(_ConnectionSection):
 
     def _set_fields_enabled(self, enabled: bool) -> None:
         self._mode_combo.setEnabled(enabled)
+        self._cal_edit.setEnabled(enabled)
         self._tolerance_edit.setEnabled(enabled)
+        self._serial_port_edit.setEnabled(enabled)
+        self._board_index_edit.setEnabled(enabled)
+        self._program_file_edit.setEnabled(enabled)
 
     def _axis_follow_tolerance_pulses_value(self) -> int:
         text = self._tolerance_edit.text().strip()
@@ -674,23 +679,24 @@ class GalvoConnectionSection(_ConnectionSection):
         return callable(getattr(backend, "run_offset_calibration", None))
 
     def _update_calibration_controls(self) -> None:
-        if not hasattr(self, "_offset_checkbox") or not hasattr(self, "_rerun_calibration_btn"):
+        if not hasattr(self, "_offset_checkbox"):
             return
         connected = self.is_backend_connected()
         backend = self._backend
         setter = getattr(backend, "set_offset_correction_enabled", None)
         if connected and callable(setter):
             setter(self._offset_checkbox.isChecked())
-        enabled = (
-            connected
+        enabled = self.manual_calibration_enabled()
+        self._offset_checkbox.setEnabled(enabled)
+        self.calibration_enabled_changed.emit(enabled)
+
+    def manual_calibration_enabled(self) -> bool:
+        return (
+            self.is_backend_connected()
             and not self._op_busy
             and self._mode_combo.currentIndex() != self.MODE_SIMULATED
             and self._backend_supports_manual_calibration()
         )
-        self._offset_checkbox.setEnabled(enabled)
-        self._rerun_calibration_btn.setEnabled(enabled)
-        if not self._op_busy:
-            self._rerun_calibration_btn.setText("Run calibration at current position")
 
     def _on_offset_checkbox_toggled(self, checked: bool) -> None:
         backend = self._backend
@@ -703,8 +709,8 @@ class GalvoConnectionSection(_ConnectionSection):
         backend = self._backend
         if backend is None or self._op_busy:
             return
-        self._rerun_calibration_btn.setText("Calibrating…")
         self._connect_btn.setEnabled(False)
+        self.calibration_started.emit()
         self._start_op(
             backend.run_offset_calibration,  # type: ignore[attr-defined]
             self._on_rerun_offset_calibration_succeeded,
@@ -717,15 +723,19 @@ class GalvoConnectionSection(_ConnectionSection):
         result = self._take_runner_result()
         self._connect_btn.setEnabled(True)
         if isinstance(result, tuple) and len(result) == 2:
+            x_offset_p = float(result[0])
+            y_offset_p = float(result[1])
             self.message.emit(
-                f"Offset calibration updated: X={float(result[0]):.0f}, Y={float(result[1]):.0f} pulses."
+                f"Offset calibration updated: X={x_offset_p:.0f}, Y={y_offset_p:.0f} pulses."
             )
+        self.calibration_finished.emit()
         self._after_connection_state_changed()
 
     def _on_rerun_offset_calibration_failed(self, message: str) -> None:
         self._finish_op()
         self._connect_btn.setEnabled(True)
         self.message.emit(f"Calibration failed: {message}")
+        self.calibration_finished.emit()
         self._after_connection_state_changed()
 
 
@@ -736,6 +746,9 @@ class ConnectionPanel(QWidget):
     nea_disconnected = pyqtSignal()
     galvo_connected = pyqtSignal(object)    # GalvoBackend
     galvo_disconnected = pyqtSignal()
+    galvo_calibration_enabled_changed = pyqtSignal(bool)
+    galvo_calibration_started = pyqtSignal()
+    galvo_calibration_finished = pyqtSignal()
     log_message = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -763,6 +776,11 @@ class ConnectionPanel(QWidget):
         self._nea_section.disconnected.connect(self.nea_disconnected)
         self._galvo_section.connected.connect(self.galvo_connected)
         self._galvo_section.disconnected.connect(self.galvo_disconnected)
+        self._galvo_section.calibration_enabled_changed.connect(
+            self.galvo_calibration_enabled_changed
+        )
+        self._galvo_section.calibration_started.connect(self.galvo_calibration_started)
+        self._galvo_section.calibration_finished.connect(self.galvo_calibration_finished)
 
         for section, tag in ((self._nea_section, "neaSNOM"), (self._galvo_section, "Galvo")):
             section.message.connect(
@@ -772,6 +790,12 @@ class ConnectionPanel(QWidget):
     def _on_section_message(self, tag: str, message: str) -> None:
         self._log.append_line(f"{tag}: {message}")
         self.log_message.emit(f"{tag}: {message}")
+
+    def run_galvo_calibration(self) -> None:
+        if not self._galvo_section.manual_calibration_enabled():
+            self.galvo_calibration_enabled_changed.emit(False)
+            return
+        self._galvo_section._rerun_offset_calibration()
 
     def closeEvent(self, event: object) -> None:  # type: ignore[override]
         self._nea_section.shutdown()
@@ -787,6 +811,7 @@ class MotionPanel(QWidget):
     """
 
     log_message = pyqtSignal(str)
+    manual_calibration_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -804,6 +829,8 @@ class MotionPanel(QWidget):
         self._origin_x_p = 0.0
         self._origin_y_p = 0.0
         self._xy_units = "pulses"
+        self._manual_calibration_available = False
+        self._manual_calibration_busy = False
         self._build_ui()
         self._restore_settings()
 
@@ -856,8 +883,6 @@ class MotionPanel(QWidget):
         self._xy_units_combo.addItems(["pulses", "nm"])
         self._xy_units_combo.currentTextChanged.connect(self._set_xy_units)
         header.addWidget(self._xy_units_combo)
-        self._menu_button = self._build_motion_menu_button()
-        header.addWidget(self._menu_button)
         outer.addLayout(header)
 
         body = QHBoxLayout()
@@ -906,6 +931,9 @@ class MotionPanel(QWidget):
         self._btn_go_xy.clicked.connect(self._go_to_xy)
         self._btn_set_home = QPushButton("Set Home")
         self._btn_set_home.clicked.connect(self._set_home)
+        self._btn_run_calibration = QPushButton("Run Calibration")
+        self._btn_run_calibration.clicked.connect(self.manual_calibration_requested)
+        self._menu_button = self._build_motion_menu_button()
 
         readouts = QVBoxLayout()
         readouts.setSpacing(8)
@@ -914,7 +942,7 @@ class MotionPanel(QWidget):
         readouts.addSpacing(2)
         readouts.addWidget(self._build_readout_column("Home", self._home_label))
         readouts.addWidget(self._build_goto_row())
-        readouts.addWidget(self._btn_set_home, alignment=Qt.AlignmentFlag.AlignLeft)
+        readouts.addWidget(self._build_xy_command_row())
         readouts.addStretch()
         body.addLayout(readouts, 1)
 
@@ -998,12 +1026,25 @@ class MotionPanel(QWidget):
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        layout.addWidget(QLabel("Go To"))
+        label = QLabel("Target")
+        label.setObjectName("MotionInlineLabel")
+        layout.addWidget(label)
         layout.addWidget(QLabel("X"))
         layout.addWidget(self._goto_x_edit)
         layout.addWidget(QLabel("Y"))
         layout.addWidget(self._goto_y_edit)
         layout.addWidget(self._btn_go_xy)
+        layout.addStretch()
+        return widget
+
+    def _build_xy_command_row(self) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self._btn_set_home)
+        layout.addWidget(self._btn_run_calibration)
+        layout.addWidget(self._menu_button)
         layout.addStretch()
         return widget
 
@@ -1452,6 +1493,24 @@ class MotionPanel(QWidget):
         self._menu_button.setEnabled(enable_xy)
         self._goto_x_edit.setEnabled(enable_xy)
         self._goto_y_edit.setEnabled(enable_xy)
+        self._apply_manual_calibration_enabled()
+
+    def set_manual_calibration_available(self, available: bool) -> None:
+        self._manual_calibration_available = available
+        self._apply_manual_calibration_enabled()
+
+    def set_manual_calibration_busy(self, busy: bool) -> None:
+        self._manual_calibration_busy = busy
+        self._btn_run_calibration.setText("Calibrating…" if busy else "Run Calibration")
+        self._apply_manual_calibration_enabled()
+
+    def _apply_manual_calibration_enabled(self) -> None:
+        self._btn_run_calibration.setEnabled(
+            self._manual_calibration_available
+            and not self._manual_calibration_busy
+            and not self._locked
+            and self._galvo_connected()
+        )
 
     def _apply_z_enabled(self) -> None:
         enable_z = self._z_steps_available and not self._locked and self._nea_connected()
