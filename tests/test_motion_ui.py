@@ -347,6 +347,12 @@ def test_scan_panel_uses_pulse_range_labels(qapp: object) -> None:
     assert "Y range (pulses):" in labels
 
 
+def test_scan_panel_min_integration_matches_readout_poll_interval(qapp: object) -> None:
+    panel = ScanPanel()
+
+    assert panel._t_integ.minimum() == 0.02
+
+
 def test_galvo_section_shows_canon_fields_for_canon_mode(qapp: object) -> None:
     panel = ConnectionPanel()
     panel.show()

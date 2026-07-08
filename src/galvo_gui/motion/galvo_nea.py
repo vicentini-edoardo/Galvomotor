@@ -67,6 +67,7 @@ _OFFSET_CALIBRATION_REPEATS = 3
 _OFFSET_CALIBRATION_NOISE_P = 20.0
 _OFFSET_CALIBRATION_STEP_P = 500.0
 _DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 5
+_STREAM_POLL_S = 0.02
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
 # fine "read" pulses, while ctr_goto_xy expects coarser command units.  The
@@ -849,30 +850,45 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
     ) -> SnomSample:
         """Read optical amplitude and phase via neaSNOM stream (averaged over t_integ_s)."""
         self._require_connected()
-        keys = [f"O{h}A" for h in range(_N_HARMONICS)] + [f"O{h}P" for h in range(_N_HARMONICS)]
-        totals = {k: 0.0 for k in keys}
+        amp_keys = [f"O{h}A" for h in range(_N_HARMONICS)]
+        phase_keys = [f"O{h}P" for h in range(_N_HARMONICS)]
+        keys = amp_keys + phase_keys
+        amp_totals = {k: 0.0 for k in amp_keys}
+        phase_sin = {k: 0.0 for k in phase_keys}
+        phase_cos = {k: 0.0 for k in phase_keys}
         counts = {k: 0 for k in keys}
 
         with self._stream_module.Stream() as s:
-            t_end = time.time() + t_integ_s
-            while time.time() < t_end:
+            t_end = time.monotonic() + t_integ_s
+            while time.monotonic() < t_end:
                 for k in keys:
                     try:
                         v = float(s.data[k][-1])
-                        if v != 0.0:
-                            totals[k] += v
-                            counts[k] += 1
+                        if not math.isfinite(v):
+                            continue
+                        if k in amp_totals:
+                            amp_totals[k] += v
+                        else:
+                            phase_sin[k] += math.sin(v)
+                            phase_cos[k] += math.cos(v)
+                        counts[k] += 1
                     except Exception:  # noqa: BLE001
                         pass
-                time.sleep(0.02)
+                time.sleep(_STREAM_POLL_S)
 
-        def _get(k: str) -> float:
-            return totals[k] / counts[k] if counts[k] else float("nan")
+        if not any(counts.values()):
+            self._report_status("Warning: no neaSNOM stream data received; recording NaN for this pixel.")
+
+        def _get_amp(k: str) -> float:
+            return amp_totals[k] / counts[k] if counts[k] else float("nan")
+
+        def _get_phase(k: str) -> float:
+            return math.atan2(phase_sin[k], phase_cos[k]) if counts[k] else float("nan")
 
         return SnomSample(
             xy_nm=(float(xy_nm[0]), float(xy_nm[1])),
-            o_amp=np.array([_get(f"O{h}A") for h in range(_N_HARMONICS)]),
-            o_phase=np.array([_get(f"O{h}P") for h in range(_N_HARMONICS)]),
+            o_amp=np.array([_get_amp(f"O{h}A") for h in range(_N_HARMONICS)]),
+            o_phase=np.array([_get_phase(f"O{h}P") for h in range(_N_HARMONICS)]),
             xy_pulses=(float(xy_pulses[0]), float(xy_pulses[1])),
         )
 

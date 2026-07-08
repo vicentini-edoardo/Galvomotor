@@ -156,7 +156,7 @@ class ScanPanel(QWidget):
         row += 1
         grid.addWidget(QLabel("Integ time (s):"), row, 0)
         self._t_integ = QDoubleSpinBox()
-        self._t_integ.setRange(0.01, 10.0)
+        self._t_integ.setRange(0.02, 10.0)
         self._t_integ.setValue(0.05)
         self._t_integ.setDecimals(3)
         self._t_integ.setSingleStep(0.01)

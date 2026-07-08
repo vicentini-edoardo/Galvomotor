@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from galvo_gui.motion import galvo_nea
@@ -118,6 +119,90 @@ def _make_nea():
     backend._connected = True
     backend._status_callback = None
     return backend
+
+
+class _FakeStreamValues:
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+
+    def __getitem__(self, index: int) -> float:
+        if index != -1 or not self._values:
+            raise IndexError
+        return self._values.pop(0)
+
+
+class _FakeStream:
+    def __init__(self, values: dict[str, list[float]]) -> None:
+        self.data = {key: _FakeStreamValues(list(series)) for key, series in values.items()}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+class _FakeStreamModule:
+    def __init__(self, values: dict[str, list[float]]) -> None:
+        self._values = values
+
+    def Stream(self) -> _FakeStream:  # noqa: N802 - mirrors nea_tools API
+        return _FakeStream(self._values)
+
+
+def _stream_values(
+    amp: list[float] | None = None,
+    phase: list[float] | None = None,
+) -> dict[str, list[float]]:
+    return {
+        **{f"O{h}A": list(amp or []) for h in range(galvo_nea._N_HARMONICS)},
+        **{f"O{h}P": list(phase or []) for h in range(galvo_nea._N_HARMONICS)},
+    }
+
+
+def test_nea_read_sample_uses_monotonic_time_and_keeps_zero_amplitudes(monkeypatch) -> None:
+    backend = _make_nea()
+    backend._stream_module = _FakeStreamModule(
+        _stream_values(amp=[0.0, 0.0], phase=[0.1, 0.1])
+    )
+    monkeypatch.setattr(galvo_nea.time, "time", lambda: (_ for _ in ()).throw(RuntimeError("wall clock used")))
+    ticks = iter([0.0, 0.0, 0.02, 0.04])
+    monkeypatch.setattr(galvo_nea.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+
+    sample = backend.read_sample(0.03)
+
+    assert sample.o_amp[0] == 0.0
+
+
+def test_nea_read_sample_uses_circular_phase_mean(monkeypatch) -> None:
+    backend = _make_nea()
+    backend._stream_module = _FakeStreamModule(
+        _stream_values(amp=[1.0, 1.0], phase=[math.pi - 0.01, -math.pi + 0.01])
+    )
+    ticks = iter([0.0, 0.0, 0.02, 0.04])
+    monkeypatch.setattr(galvo_nea.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+
+    sample = backend.read_sample(0.03)
+
+    assert abs(abs(sample.o_phase[0]) - math.pi) < 0.02
+
+
+def test_nea_read_sample_warns_when_stream_has_no_data(monkeypatch) -> None:
+    messages: list[str] = []
+    backend = _make_nea()
+    backend._status_callback = messages.append
+    backend._stream_module = _FakeStreamModule(_stream_values())
+    ticks = iter([0.0, 0.0, 0.02])
+    monkeypatch.setattr(galvo_nea.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(galvo_nea.time, "sleep", lambda _s: None)
+
+    sample = backend.read_sample(0.01)
+
+    assert np.isnan(sample.o_amp).all()
+    assert np.isnan(sample.o_phase).all()
+    assert any("no neaSNOM stream data" in message for message in messages)
 
 
 def test_move_relative_uses_notebook_goto_unit_conversion(monkeypatch) -> None:

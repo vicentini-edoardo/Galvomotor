@@ -55,6 +55,9 @@ CLAUDE.md
 # Local git worktrees
 .worktrees/
 
+# Local graphify
+graphify-out/
+
 
 notebooks/CanonGB511.dll
 notebooks/gb501p.dll
