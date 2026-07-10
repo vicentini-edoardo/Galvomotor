@@ -57,10 +57,13 @@ class ScanPanel(QWidget):
         self._worker: ScanWorker | None = None
         self._settings = QSettings("galvo_gui", "ScanPanel")
 
-        # Accumulation grids — resized when scan starts. Always 3-D internally
-        # (nb_z, nb_y, nb_x); a 2-D scan is just nb_z == 1.
-        self._amp_grid: np.ndarray | None = None    # (nb_z, nb_y, nb_x)
-        self._phase_grid: np.ndarray | None = None  # (nb_z, nb_y, nb_x)
+        # Accumulation grids — resized when scan starts. Hold all harmonics so
+        # the visualised one can be switched live without corrupting past
+        # pixels. Always 3-D internally per harmonic (nb_z, nb_y, nb_x); a
+        # 2-D scan is just nb_z == 1.
+        self._amp_grid: np.ndarray | None = None    # (n_harm, nb_z, nb_y, nb_x)
+        self._phase_grid: np.ndarray | None = None  # (n_harm, nb_z, nb_y, nb_x)
+        self._display_grid: np.ndarray | None = None  # (ny, nx), currently on screen
 
         self._build_ui()
         self._restore_settings()
@@ -90,7 +93,29 @@ class ScanPanel(QWidget):
         lv.addWidget(self._log)
         lv.addStretch()
 
-        # Right: live image
+        # Right: harmonic/data picker (top) + live image + hover readout (bottom)
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+
+        picker = QHBoxLayout()
+        picker.addWidget(QLabel("Harmonic:"))
+        self._harmonic_combo = QComboBox()
+        for h in range(_N_HARMONICS):
+            self._harmonic_combo.addItem(f"O{h}")
+        self._harmonic_combo.setCurrentIndex(2)  # O2 default like notebooks
+        self._harmonic_combo.currentIndexChanged.connect(self._update_image)
+        picker.addWidget(self._harmonic_combo)
+
+        picker.addWidget(QLabel("Show:"))
+        self._data_combo = QComboBox()
+        self._data_combo.addItem("Amplitude")
+        self._data_combo.addItem("Phase")
+        self._data_combo.currentIndexChanged.connect(self._update_image)
+        picker.addWidget(self._data_combo)
+        picker.addStretch()
+        rv.addLayout(picker)
+
         self._glw = pg.GraphicsLayoutWidget()
         theme.style_graphics_layout(self._glw)
         self._plot = self._glw.addPlot(title="Scan image")
@@ -105,9 +130,15 @@ class ScanPanel(QWidget):
             label="Signal",
         )
         self._colorbar.setImageItem(self._img_item)
+        self._plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        rv.addWidget(self._glw)
+
+        self._hover_label = QLabel("")
+        self._hover_label.setObjectName("MotionInlineLabel")
+        rv.addWidget(self._hover_label)
 
         splitter.addWidget(left)
-        splitter.addWidget(self._glw)
+        splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter)
@@ -262,30 +293,13 @@ class ScanPanel(QWidget):
         grp = QGroupBox("Display")
         vbox = QVBoxLayout(grp)
 
-        hbox = QHBoxLayout()
-        hbox.addWidget(QLabel("Harmonic:"))
-        self._harmonic_combo = QComboBox()
-        for h in range(_N_HARMONICS):
-            self._harmonic_combo.addItem(f"O{h}")
-        self._harmonic_combo.setCurrentIndex(2)  # O2 default like notebooks
-        self._harmonic_combo.currentIndexChanged.connect(self._update_image)
-        hbox.addWidget(self._harmonic_combo)
-
-        hbox.addWidget(QLabel("Show:"))
-        self._data_combo = QComboBox()
-        self._data_combo.addItem("Amplitude")
-        self._data_combo.addItem("Phase")
-        self._data_combo.currentIndexChanged.connect(self._update_image)
-        hbox.addWidget(self._data_combo)
-        vbox.addLayout(hbox)
-
         # 3-D only: pick a Z slice to view, or collapse the stack with a
-        # max-intensity projection. Hidden entirely in 2-D mode. A top rule
-        # separates it from the 2-D harmonic/data controls above.
+        # max-intensity projection. Hidden entirely in 2-D mode. Harmonic /
+        # amplitude-phase controls live above the image, not here.
         self._z_slice_row = QWidget()
         self._z_slice_row.setObjectName("ZDisplaySection")
         z_col = QVBoxLayout(self._z_slice_row)
-        z_col.setContentsMargins(0, 8, 0, 0)
+        z_col.setContentsMargins(0, 0, 0, 0)
         z_col.setSpacing(6)
 
         z_row = QHBoxLayout()
@@ -399,9 +413,9 @@ class ScanPanel(QWidget):
         nb_z = self._nb_z.value() if is_3d else 1
         dz_nm = float(self._z_step_combo.currentData()) if is_3d else 0.0
 
-        # Fresh accumulation grids (NaN until pixel received)
-        self._amp_grid = np.full((nb_z, nb_y, nb_x), float("nan"))
-        self._phase_grid = np.full((nb_z, nb_y, nb_x), float("nan"))
+        # Fresh accumulation grids (NaN until pixel received), all harmonics
+        self._amp_grid = np.full((_N_HARMONICS, nb_z, nb_y, nb_x), float("nan"))
+        self._phase_grid = np.full((_N_HARMONICS, nb_z, nb_y, nb_x), float("nan"))
 
         # Clear image + Z slice picker
         self._img_item.setImage(np.zeros((nb_x, nb_y), dtype=np.float32))
@@ -454,12 +468,13 @@ class ScanPanel(QWidget):
         # o_amp / o_phase are numpy arrays (shape 6,) carried as object in signal
         amp_arr: np.ndarray = o_amp  # type: ignore[assignment]
         phase_arr: np.ndarray = o_phase  # type: ignore[assignment]
-        h = self._harmonic_combo.currentIndex()
 
+        # Store every harmonic so the visualised one can be switched live
+        # without corrupting already-acquired pixels.
         if self._amp_grid is not None:
-            self._amp_grid[iz, iy, ix] = float(amp_arr[h])
+            self._amp_grid[:, iz, iy, ix] = amp_arr
         if self._phase_grid is not None:
-            self._phase_grid[iz, iy, ix] = float(phase_arr[h])
+            self._phase_grid[:, iz, iy, ix] = phase_arr
 
         # Follow the scan through the stack so the visible slice matches
         # what's currently being acquired.
@@ -496,9 +511,10 @@ class ScanPanel(QWidget):
         h = self._harmonic_combo.currentIndex()
         use_phase = self._data_combo.currentIndex() == 1
 
-        volume = self._phase_grid if use_phase else self._amp_grid  # (nb_z, ny, nx)
+        volume = self._phase_grid if use_phase else self._amp_grid  # (n_harm, nb_z, ny, nx)
         if volume is None:
             return
+        volume = volume[h]  # (nb_z, ny, nx)
 
         if self._max_proj.isChecked():
             with np.errstate(all="ignore"):
@@ -507,15 +523,35 @@ class ScanPanel(QWidget):
             iz = self._z_slice_slider.value()
             grid = volume[iz]
 
+        self._display_grid = grid  # (ny, nx), what's currently shown
+
         # Replace NaN with 0 for display
         display = np.where(np.isfinite(grid), grid, 0.0)
 
         # pyqtgraph ImageItem: row=y, col=x → transpose for (nx, ny) convention
         self._img_item.setImage(display.T.astype(np.float32), autoLevels=True)
 
-        # Update colorbar label
+        # Update colorbar label. ColorBarItem.setLabel takes the axis name
+        # first ("left" for its default vertical orientation) — matches how
+        # the constructor sets the initial "Signal" label.
         lbl = f"O{h} {'Phase (rad)' if use_phase else 'Amplitude'}"
-        self._colorbar.setLabel(lbl)
+        self._colorbar.setLabel("left", lbl)
+
+    def _on_mouse_moved(self, pos) -> None:
+        if self._display_grid is None or not self._plot.sceneBoundingRect().contains(pos):
+            self._hover_label.setText("")
+            return
+        vp = self._plot.vb.mapSceneToView(pos)
+        ix, iy = int(np.floor(vp.x())), int(np.floor(vp.y()))
+        ny, nx = self._display_grid.shape
+        if 0 <= ix < nx and 0 <= iy < ny:
+            val = self._display_grid[iy, ix]
+            h = self._harmonic_combo.currentIndex()
+            kind = "phase" if self._data_combo.currentIndex() == 1 else "amp"
+            txt = "NaN" if not np.isfinite(val) else f"{val:.4g}"
+            self._hover_label.setText(f"x={ix}  y={iy}   O{h} {kind} = {txt}")
+        else:
+            self._hover_label.setText("")
 
     # ------------------------------------------------------------------
     # State
