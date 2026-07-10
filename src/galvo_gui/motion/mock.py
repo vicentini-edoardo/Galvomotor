@@ -178,6 +178,8 @@ class MockNeaBackend(NeaBackend):
         x_nm, y_nm = xy_nm
         r = math.sqrt(x_nm ** 2 + y_nm ** 2)
         decay = math.exp(-r / 3000.0)  # 3 µm characteristic scale
+        z_decay = math.exp(-(self._z_nm ** 2) / (2 * 2000.0 ** 2))  # focus at z=0
+        decay *= z_decay
 
         o_amp = np.array(
             [decay * (1.0 / (h + 1)) + float(self._rng.normal(0, 0.01))

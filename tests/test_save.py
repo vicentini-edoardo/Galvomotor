@@ -112,3 +112,47 @@ def test_text_export_contains_metadata_and_rows(tmp_path: Any) -> None:  # noqa:
     second_row_fields = lines[11].split(" - ")
     assert second_row_fields[0] == "1"
     assert second_row_fields[1] == "0"
+
+
+def _make_arrays_3d(nz: int = 2, ny: int = 3, nx: int = 4) -> tuple:
+    rng = np.random.default_rng(1)
+    amp = rng.random((6, nz, ny, nx))
+    phase = rng.random((6, nz, ny, nx)) * 2 * np.pi - np.pi
+    coords = rng.random((nz, ny, nx, 2)) * 1000.0
+    coords_z = np.array([iz * 500.0 for iz in range(nz)])
+    return amp, phase, coords, coords_z
+
+
+def test_roundtrip_shapes_3d(tmp_path: Any) -> None:  # noqa: F821
+    nz, ny, nx = 2, 3, 4
+    amp, phase, coords, coords_z = _make_arrays_3d(nz, ny, nx)
+    coords_pulses = coords * 0.1108
+    path = tmp_path / "scan3d.h5"
+
+    save_scan_h5(path, amp, phase, coords, coords_pulses, {"nb_z": nz}, coords_z=coords_z)
+
+    with h5py.File(path, "r") as h5:
+        for h in range(6):
+            assert h5[f"O{h}"].shape == (nz, ny, nx)
+        assert h5["coordinates"].shape == (nz, ny, nx, 2)
+        assert h5["coordinates_z"].shape == (nz,)
+        np.testing.assert_allclose(h5["coordinates_z"][:], coords_z)
+
+
+def test_text_export_3d_has_slice_column(tmp_path: Any) -> None:  # noqa: F821
+    nz, ny, nx = 2, 2, 2
+    amp, phase, coords, coords_z = _make_arrays_3d(nz, ny, nx)
+    coords_pulses = coords * 0.1108
+    path = tmp_path / "scan3d.txt"
+
+    save_scan_text(path, amp, phase, coords_pulses, {"nb_z": nz}, coords_z=coords_z)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header_line = next(line for line in lines if line.startswith("# #slice"))
+    assert header_line.startswith("# #slice - z_nm - #row - #col - x_pulse - y_pulse - O0A - O0P")
+
+    data_lines = [line for line in lines if not line.startswith("#")]
+    assert len(data_lines) == nz * ny * nx
+    first = data_lines[0].split(" - ")
+    assert first[0] == "0"  # slice index
+    assert float(first[1]) == pytest.approx(coords_z[0])

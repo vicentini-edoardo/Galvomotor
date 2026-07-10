@@ -230,6 +230,38 @@ QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
     background-color: {ACCENT};
 }}
 
+/* Slider (Scan panel Z-slice picker) */
+QSlider::groove:horizontal {{
+    background: {SURFACE_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    height: 6px;
+}}
+QSlider::handle:horizontal {{
+    background: {ACCENT};
+    border: none;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: #7ad2ff;
+}}
+QSlider::handle:horizontal:disabled {{
+    background: {BORDER};
+}}
+QSlider::sub-page:horizontal {{
+    background: {ACCENT};
+    border-radius: 3px;
+}}
+
+/* Scan panel: Z-stack display section, separated from the 2-D controls
+   above it by a top rule rather than a card so it reads as one group. */
+QWidget#ZDisplaySection {{
+    border-top: 1px solid {BORDER};
+}}
+
 /* Checkboxes */
 QCheckBox {{
     color: {TEXT};
