@@ -70,7 +70,12 @@ _MOVE_FOLLOW_POLL_S = 0.02
 _OFFSET_CALIBRATION_REPEATS = 3
 _OFFSET_CALIBRATION_NOISE_P = 20.0
 _OFFSET_CALIBRATION_STEP_P = 500.0
-_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 5
+# 5 pulses (half a goto unit, the pure quantisation error) is too tight in
+# practice: it leaves no margin for ordinary encoder read-back noise, which
+# the offset-calibration code elsewhere already treats as normal up to
+# _OFFSET_CALIBRATION_NOISE_P (20 pulses). 15 absorbs that noise while
+# staying well short of 20, so a genuine stalled/limited move still trips it.
+_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 15
 _STREAM_POLL_S = 0.02
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
