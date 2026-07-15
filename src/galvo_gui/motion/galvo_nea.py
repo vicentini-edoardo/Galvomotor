@@ -761,6 +761,10 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
         self._z_nm: float = 0.0
         self._status_callback: Callable[[str], None] | None = None
         self._backend_label = "neaSNOM"
+        # Per-step wall time (s) of the most recent move_z_relative, so a probe
+        # can see where a ~0.7 s Z move actually spends its time (mirror open,
+        # command, settle-wait, read-back). Cheap perf_counter calls; always on.
+        self._last_z_move_timings: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Connection
@@ -877,13 +881,35 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
 
     def move_z_relative(self, dz_nm: float) -> None:
         self._require_connected()
+        timings: dict[str, float] = {}
+        t_start = time.perf_counter()
         with self._open_mirror() as mirror:
+            timings["open_mirror"] = time.perf_counter() - t_start
+            t = time.perf_counter()
             mirror.go_relative(0, 0, dz_nm)
+            timings["go_relative"] = time.perf_counter() - t
+            t = time.perf_counter()
             self._wait_for_mirror(mirror)
+            timings["wait_for_mirror"] = time.perf_counter() - t
+            t = time.perf_counter()
             # Read back the hardware position so the GUI reports what the
             # mirror actually did, not what we asked for.
             z_abs_nm = float(mirror.absolute_position[2])
+            timings["read_absolute_position"] = time.perf_counter() - t
+            t_body_end = time.perf_counter()
+        timings["close_mirror"] = time.perf_counter() - t_body_end
+        timings["total"] = time.perf_counter() - t_start
+        self._last_z_move_timings = timings
         self._z_nm = z_abs_nm - self._z0_nm
+
+    def last_z_move_timings(self) -> dict[str, float]:
+        """Per-step wall time (s) of the most recent :meth:`move_z_relative`.
+
+        Keys: ``open_mirror``, ``go_relative``, ``wait_for_mirror``,
+        ``read_absolute_position``, ``close_mirror``, ``total``. Empty before
+        the first Z move. For diagnostics/probing only.
+        """
+        return dict(self._last_z_move_timings)
 
     def read_z_nm(self) -> float:
         self._require_connected()

@@ -30,11 +30,29 @@ def timed(bucket: dict, name: str):
     return deco
 
 
-def instrument(galvo, nea, bucket: dict):
+def timed_move_z(bucket: dict, name: str, nea, z_bucket: dict):
+    """Like ``timed``, but also pulls the backend's per-step Z breakdown
+    (open_mirror / go_relative / wait_for_mirror / read_absolute_position /
+    close_mirror) into *z_bucket* after each move, when the backend exposes it."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            t0 = time.perf_counter()
+            result = fn(*args, **kwargs)
+            bucket[name].append(time.perf_counter() - t0)
+            sub = getattr(nea, "last_z_move_timings", lambda: {})()
+            for key, value in sub.items():
+                z_bucket[key].append(value)
+            return result
+        return wrapper
+    return deco
+
+
+def instrument(galvo, nea, bucket: dict, z_bucket: dict):
     galvo.move_relative_pulses = timed(bucket, "move_relative_pulses")(galvo.move_relative_pulses)
     galvo.read_xy_pulses = timed(bucket, "read_xy_pulses")(galvo.read_xy_pulses)
     nea.read_sample = timed(bucket, "read_sample")(nea.read_sample)
-    nea.move_z_relative = timed(bucket, "move_z_relative")(nea.move_z_relative)
+    nea.move_z_relative = timed_move_z(bucket, "move_z_relative", nea, z_bucket)(nea.move_z_relative)
 
 
 def main() -> None:
@@ -77,7 +95,8 @@ def main() -> None:
         show_offset("after --no-offset")
 
     bucket: dict[str, list[float]] = defaultdict(list)
-    instrument(galvo, nea, bucket)
+    z_bucket: dict[str, list[float]] = defaultdict(list)
+    instrument(galvo, nea, bucket, z_bucket)
 
     pixel_t0 = time.perf_counter()
     pixel_times: list[float] = []
@@ -152,6 +171,19 @@ def main() -> None:
     for name, times in bucket.items():
         print(f"{name:<24}{len(times):>5}{statistics.mean(times)*1e3:>12.2f}"
               f"{min(times)*1e3:>10.2f}{max(times)*1e3:>10.2f}")
+
+    if z_bucket:
+        # Break the ~0.7 s move_z_relative down into its hardware sub-steps so
+        # the dominant one is obvious. Ordered as they run inside the move.
+        order = ["open_mirror", "go_relative", "wait_for_mirror",
+                 "read_absolute_position", "close_mirror", "total"]
+        print(f"\nmove_z_relative breakdown:")
+        for key in order:
+            times = z_bucket.get(key)
+            if not times:
+                continue
+            print(f"  {key:<22}{len(times):>5}{statistics.mean(times)*1e3:>12.2f}"
+                  f"{min(times)*1e3:>10.2f}{max(times)*1e3:>10.2f}")
 
     if len(pixel_times) > 1:
         # first pixel includes the start-corner move; skip it
