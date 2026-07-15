@@ -354,6 +354,11 @@ def test_move_relative_applies_configured_x_goto_bias(monkeypatch) -> None:
     wrapper = _FakeWrapper()
     backend = _make_galvo(wrapper, _FakeGalvo())
     backend._x_goto_bias = 12
+    # The +12 goto-unit bias lands the read-back ~108 pulses off target, so this
+    # exercises the miss path. Pin a tight tolerance here rather than relying on
+    # the module default, which is deliberately wide (~130) to tolerate that same
+    # bias/offset residual on real hardware.
+    backend._axis_follow_tolerance_pulses = 15
 
     with pytest.raises(GalvoError, match="X axis read-back"):
         backend.move_relative_pulses(100.0, 0.0)

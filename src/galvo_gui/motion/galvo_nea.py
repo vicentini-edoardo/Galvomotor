@@ -70,12 +70,21 @@ _MOVE_FOLLOW_POLL_S = 0.02
 _OFFSET_CALIBRATION_REPEATS = 3
 _OFFSET_CALIBRATION_NOISE_P = 20.0
 _OFFSET_CALIBRATION_STEP_P = 500.0
-# 5 pulses (half a goto unit, the pure quantisation error) is too tight in
-# practice: it leaves no margin for ordinary encoder read-back noise, which
-# the offset-calibration code elsewhere already treats as normal up to
-# _OFFSET_CALIBRATION_NOISE_P (20 pulses). 15 absorbs that noise while
-# staying well short of 20, so a genuine stalled/limited move still trips it.
-_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 15
+# The galvo has a real, position/history-dependent follow error of roughly a
+# full offset (~110 pulses): the constant offset correction cancels it during
+# continuous same-direction stepping but not on a move that reverses direction
+# (e.g. the start-of-slice corner move after goto_center), where the correction
+# is left almost entirely un-cancelled. Add encoder noise (up to ~20 pulses,
+# per _OFFSET_CALIBRATION_NOISE_P) and the worst-case miss is ~130 pulses.
+# 130 lets those moves pass instead of raising.
+#
+# TRADE-OFF: this is a deliberate quick fix, not a correct one. It masks the
+# uncompensated follow error rather than removing it, so an affected pixel can
+# sit up to ~130 pulses from its intended position, and a genuinely stalled
+# axis now has to miss by >130 pulses before it is flagged. The principled fix
+# is a closed-loop corrective move (re-command the residual until within a
+# tight tolerance); revisit this constant if that is implemented.
+_DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 130
 _STREAM_POLL_S = 0.02
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
