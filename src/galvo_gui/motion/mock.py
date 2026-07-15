@@ -52,7 +52,15 @@ class MockGalvoBackend(GalvoBackend):
     # Motion (pulses)
     # ------------------------------------------------------------------
 
-    def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
+    def move_relative_pulses(
+        self,
+        dx_p: float,
+        dy_p: float,
+        *,
+        current_xy_pulses: Tuple[float, float] | None = None,
+    ) -> None:
+        # The mock holds its position in memory, so there is no hardware read to
+        # skip; current_xy_pulses is accepted for interface parity and ignored.
         self._require_connected()
         before_x = self._x_p - self._home_x_p
         before_y = self._y_p - self._home_y_p

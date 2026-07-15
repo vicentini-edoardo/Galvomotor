@@ -67,7 +67,15 @@ _OFFSET_CALIBRATION_REPEATS = 3
 _OFFSET_CALIBRATION_NOISE_P = 20.0
 _OFFSET_CALIBRATION_STEP_P = 500.0
 _DEFAULT_AXIS_FOLLOW_TOLERANCE_PULSES = 5
+# Upper bound on the stream sampling interval: long integrations poll no
+# slower than this so the average is taken across the whole window (and no
+# faster than needed, to keep CPU use sane).
 _STREAM_POLL_S = 0.02
+# Aim for at least this many samples inside the integration window. Without
+# this, an integration window shorter than _STREAM_POLL_S captured a single
+# sample yet still cost a full _STREAM_POLL_S sleep (e.g. t_integ=10 ms took
+# ~20 ms and averaged nothing).
+_STREAM_MIN_SAMPLES = 4
 
 # The GB511 board uses two coordinate spaces: ctr_get_current_xy_pos reports
 # fine "read" pulses, while ctr_goto_xy expects coarser command units.  The
@@ -321,7 +329,13 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
     # Motion
     # ------------------------------------------------------------------
 
-    def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
+    def move_relative_pulses(
+        self,
+        dx_p: float,
+        dy_p: float,
+        *,
+        current_xy_pulses: Tuple[float, float] | None = None,
+    ) -> None:
         """Move galvo by (dx_p, dy_p) encoder pulses relative to current position.
 
         Replicates the working notebook's scan() pattern: read the current
@@ -336,9 +350,18 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         from the read-back instead lets encoder noise flip it by a goto unit
         (~9 read pulses) near a rounding boundary, which is why jogging one
         axis appeared to move the other.
+
+        When *current_xy_pulses* is supplied (a :meth:`read_xy_pulses` value the
+        caller just read, with no motion since), the board's raw read-back bits
+        are reconstructed from it instead of issuing another ~7 ms position read
+        — the read frame is an exact affine map of the raw bits, so the round
+        trip is lossless.
         """
         self._require_connected()
-        xb_before, yb_before = self._read_gb511_bits()
+        if current_xy_pulses is None:
+            xb_before, yb_before = self._read_gb511_bits()
+        else:
+            xb_before, yb_before = self._bits_from_read_xy_pulses(current_xy_pulses)
         gx_cur = round(_GOTO_PER_READ_X * xb_before)
         gy_cur = round(_GOTO_PER_READ_Y * yb_before)
 
@@ -450,6 +473,16 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         x_p, y_p = self._read_xy_pulses_relative_to_startup_home()
         home_x_p, home_y_p = self._current_home_xy_pulses()
         return (x_p - home_x_p, y_p - home_y_p)
+
+    def _bits_from_read_xy_pulses(self, xy_pulses: Tuple[float, float]) -> Tuple[int, int]:
+        """Invert :meth:`read_xy_pulses`: home/centre-relative read pulses back to
+        raw GB511 bits, so a move can reuse an already-read position instead of
+        re-reading the board. Exact inverse: read_xy_pulses subtracts the
+        calibrated centre (K*X0) and the active home from integer bits."""
+        home_x_p, home_y_p = self._current_home_xy_pulses()
+        xb = xy_pulses[0] + home_x_p + self._galvo.K * self._galvo.X0
+        yb = xy_pulses[1] + home_y_p + self._galvo.K * self._galvo.Y0
+        return (round(xb), round(yb))
 
     def last_move_diagnostics(self) -> dict[str, int | float]:
         return dict(self._last_move_diag)
@@ -858,9 +891,10 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
         phase_cos = {k: 0.0 for k in phase_keys}
         counts = {k: 0 for k in keys}
 
+        poll_s = _stream_poll_interval(t_integ_s)
         with self._stream_module.Stream() as s:
             t_end = time.monotonic() + t_integ_s
-            while time.monotonic() < t_end:
+            while True:
                 for k in keys:
                     try:
                         v = float(s.data[k][-1])
@@ -874,7 +908,13 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
                         counts[k] += 1
                     except Exception:  # noqa: BLE001
                         pass
-                time.sleep(_STREAM_POLL_S)
+                # Sample at least once, then poll across the window without
+                # sleeping past its end (the old fixed 20 ms sleep overshot
+                # every window shorter than that and averaged a single sample).
+                remaining = t_end - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(poll_s, remaining))
 
         if not any(counts.values()):
             self._report_status("Warning: no neaSNOM stream data received; recording NaN for this pixel.")
@@ -914,6 +954,18 @@ class RealNeaBackend(_StatusReporterMixin, NeaBackend):
         waiter = getattr(mirror, "await_async", None)
         if waiter is not None:
             self._loop.run_until_complete(waiter())
+
+
+def _stream_poll_interval(t_integ_s: float) -> float:
+    """Stream sampling interval for an integration window of *t_integ_s*.
+
+    Capped at ``_STREAM_POLL_S`` for long windows, and shrunk to fit at least
+    ``_STREAM_MIN_SAMPLES`` samples inside short ones so the average is taken
+    across the window instead of a single overshooting sample.
+    """
+    if t_integ_s <= 0:
+        return _STREAM_POLL_S
+    return min(_STREAM_POLL_S, t_integ_s / _STREAM_MIN_SAMPLES)
 
 
 def _is_raw_dll(obj: Any) -> bool:
