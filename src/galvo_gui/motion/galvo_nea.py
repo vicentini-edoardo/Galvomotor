@@ -61,7 +61,11 @@ _N_HARMONICS = 6
 # Give the galvo time to act on a move before the read-back that detects
 # silently dropped moves (galvo settling is sub-ms; this covers DLL latency).
 _MOVE_SETTLE_S = 0.05
-_MOVE_FOLLOW_TIMEOUT_S = 0.25
+# Total time a move is allowed to settle before being flagged as missed,
+# measured from the moment the goto is issued (matches the pre-optimisation
+# budget of _MOVE_SETTLE_S + 0.25s poll window, now spent entirely polling
+# instead of a blind sleep followed by a shorter poll window).
+_MOVE_FOLLOW_TIMEOUT_S = 0.30
 _MOVE_FOLLOW_POLL_S = 0.02
 _OFFSET_CALIBRATION_REPEATS = 3
 _OFFSET_CALIBRATION_NOISE_P = 20.0
