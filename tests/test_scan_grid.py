@@ -16,6 +16,55 @@ def _make_backends():
     return galvo, nea
 
 
+def test_scan_reuses_position_read() -> None:
+    """Each move that follows a position read is handed that read, so the real
+    backend can skip re-reading the board (see move_relative_pulses)."""
+
+    class SpyGalvo(MockGalvoBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.moves: list = []
+
+        def move_relative_pulses(self, dx_p, dy_p, *, current_xy_pulses=None):  # type: ignore[override]
+            self.moves.append((dx_p, dy_p, current_xy_pulses))
+            super().move_relative_pulses(dx_p, dy_p, current_xy_pulses=current_xy_pulses)
+
+    galvo = SpyGalvo()
+    nea = MockNeaBackend()
+    galvo.connect()
+    nea.connect()
+
+    run_raster_scan(galvo, nea, 400.0, 400.0, 4, 4, 0.0, 0.001,
+                    lambda ix, iy, s: None, lambda: False, settle=lambda _t: None)
+
+    # The only move without a supplied position is the initial corner move,
+    # which is not preceded by a read. Every other move carries one.
+    with_pos = [m for m in galvo.moves if m[2] is not None]
+    without_pos = [m for m in galvo.moves if m[2] is None]
+    assert len(without_pos) == 1  # the initial move to (-dx/2, -dy/2)
+    assert with_pos, "expected moves to reuse the preceding position read"
+    # Each supplied position is a 2-tuple of the read frame.
+    for _dx, _dy, pos in with_pos:
+        assert isinstance(pos, tuple) and len(pos) == 2
+
+
+def test_stream_poll_interval() -> None:
+    """Poll interval fits several samples in short windows and caps for long ones."""
+    from galvo_gui.motion.galvo_nea import (
+        _STREAM_MIN_SAMPLES,
+        _STREAM_POLL_S,
+        _stream_poll_interval,
+    )
+
+    # Short window: previously one sample cost a full _STREAM_POLL_S sleep.
+    assert _stream_poll_interval(0.01) == pytest.approx(0.01 / _STREAM_MIN_SAMPLES)
+    assert _stream_poll_interval(0.01) < _STREAM_POLL_S
+    # Long window: capped so CPU use stays sane.
+    assert _stream_poll_interval(1.0) == _STREAM_POLL_S
+    # Degenerate window: fall back to the cap, never zero/negative.
+    assert _stream_poll_interval(0.0) == _STREAM_POLL_S
+
+
 def test_scan_visits_all_pixels() -> None:
     """run_raster_scan calls on_point exactly nb_x * nb_y times."""
     galvo, nea = _make_backends()
