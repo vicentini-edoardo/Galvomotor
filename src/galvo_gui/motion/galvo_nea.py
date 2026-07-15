@@ -510,37 +510,16 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
         return (self._home_x_p, self._home_y_p)
 
     def goto_center(self) -> None:
-        """Move galvo back to the active home position, waiting for the
-        read-back to confirm arrival.
-
-        Without waiting here, a caller that reads position again right after
-        (e.g. the next Z-slice's raster in a 3-D scan, which calls this at
-        the end of every slice) can race an unfinished return-to-centre
-        move: it reads a still-in-transit position as "current", computes
-        its own corner-move target from that wrong base, and the two moves
-        interact — producing large, confusing read-back mismatches that
-        move_relative_pulses's own settle/validate logic never sees coming
-        because it trusts goto_center() already landed.
-        """
+        """Move galvo back to the active home position."""
         self._require_connected()
         # Not Galvo.GoHome: it feeds read-unit pulses straight into
         # ctr_goto_xy without the goto-unit conversion (see _GOTO_PER_READ_X).
         # The calibrated centre sits at K*X0 read pulses; add the active home.
         home_x_p, home_y_p = self._current_home_xy_pulses()
-        target_x_read = self._galvo.K * self._galvo.X0 + home_x_p
-        target_y_read = self._galvo.K * self._galvo.Y0 + home_y_p
-        xb_before, yb_before = self._read_gb511_bits()
-        moved = self._goto_read_units(
-            target_x_read, target_y_read, ref=(xb_before, yb_before)
+        self._goto_read_units(
+            self._galvo.K * self._galvo.X0 + home_x_p,
+            self._galvo.K * self._galvo.Y0 + home_y_p,
         )
-        if not moved:
-            return
-        dx_p = target_x_read - xb_before
-        dy_p = target_y_read - yb_before
-        xb_after, yb_after = self._wait_for_axis_follow(
-            dx_p, dy_p, target_x_read, target_y_read
-        )
-        self._validate_axis_follow(dx_p, dy_p, target_x_read, target_y_read, xb_after, yb_after)
 
     def available_xy_steps_pulses(self) -> tuple[float, ...]:
         self._require_connected()
