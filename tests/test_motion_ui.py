@@ -353,6 +353,81 @@ def test_scan_panel_min_integration_matches_readout_poll_interval(qapp: object) 
     assert panel._t_integ.minimum() == 0.02
 
 
+def test_scan_panel_3d_toggle_shows_z_controls(qapp: object) -> None:
+    panel = ScanPanel()
+    panel.show()
+
+    panel._z_enable.setChecked(True)
+    assert panel._z_cluster.isVisible()
+    assert panel._z_slice_row.isVisible()
+    assert panel._max_proj.isVisible()
+
+    panel._z_enable.setChecked(False)
+    assert not panel._z_cluster.isVisible()
+    assert not panel._z_slice_row.isVisible()
+    assert not panel._max_proj.isVisible()
+
+
+def test_scan_panel_start_scan_wires_3d_params(qapp: object, tmp_path: Path, qtbot: object) -> None:  # noqa: F821
+    """Starting with '3D scan' checked passes the Z-stack UI values to the worker."""
+    panel = ScanPanel()
+    galvo, nea = _connect_mocks(panel)
+
+    panel._twait.setValue(0.0)
+    panel._t_integ.setValue(0.02)
+    panel._nb_x.setValue(2)
+    panel._nb_y.setValue(2)
+    panel._save_dir.setText(str(tmp_path))
+    panel._filename.setText("test_panel_3d")
+
+    panel._z_enable.setChecked(True)
+    panel._nb_z.setValue(4)
+    panel._z_step_combo.setCurrentIndex(0)
+
+    panel._start_scan()
+    worker = panel._worker
+    assert worker is not None
+    assert worker._nb_z == 4
+    assert worker._dz_nm == panel._z_step_combo.currentData()
+
+    with qtbot.waitSignal(worker.finished, timeout=30_000):  # type: ignore[attr-defined]
+        pass
+
+    galvo.disconnect()
+    nea.disconnect()
+
+
+def test_scan_panel_start_scan_2d_ignores_stale_z_controls(
+    qapp: object, tmp_path: Path, qtbot: object  # noqa: F821
+) -> None:
+    """Regression: with '3D scan' unchecked, a leftover Z-stack value in the
+    slices spinbox must not leak into the worker (nb_z=1, dz_nm=0.0)."""
+    panel = ScanPanel()
+    galvo, nea = _connect_mocks(panel)
+
+    panel._twait.setValue(0.0)
+    panel._t_integ.setValue(0.02)
+    panel._nb_x.setValue(2)
+    panel._nb_y.setValue(2)
+    panel._save_dir.setText(str(tmp_path))
+    panel._filename.setText("test_panel_2d")
+
+    panel._nb_z.setValue(7)  # stale value from a previous 3-D configuration
+    panel._z_enable.setChecked(False)
+
+    panel._start_scan()
+    worker = panel._worker
+    assert worker is not None
+    assert worker._nb_z == 1
+    assert worker._dz_nm == 0.0
+
+    with qtbot.waitSignal(worker.finished, timeout=30_000):  # type: ignore[attr-defined]
+        pass
+
+    galvo.disconnect()
+    nea.disconnect()
+
+
 def test_galvo_section_shows_canon_fields_for_canon_mode(qapp: object) -> None:
     panel = ConnectionPanel()
     panel.show()
