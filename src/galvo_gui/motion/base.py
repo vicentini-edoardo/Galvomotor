@@ -77,8 +77,22 @@ class GalvoBackend(ABC):
     def is_connected(self) -> bool: ...
 
     @abstractmethod
-    def move_relative_pulses(self, dx_p: float, dy_p: float) -> None:
-        """Move galvo by (dx_p, dy_p) encoder pulses from current position."""
+    def move_relative_pulses(
+        self,
+        dx_p: float,
+        dy_p: float,
+        *,
+        current_xy_pulses: Tuple[float, float] | None = None,
+    ) -> None:
+        """Move galvo by (dx_p, dy_p) encoder pulses from current position.
+
+        *current_xy_pulses*, when given, is the current position in the same
+        frame :meth:`read_xy_pulses` returns — the value the caller has *just*
+        read with no motion since. A backend that would otherwise re-read the
+        hardware to learn where it is may reuse this instead, saving a position
+        read. Passing a stale value (motion occurred since it was read) yields a
+        wrong move, so only supply a reading taken immediately before the call.
+        """
         ...
 
     @abstractmethod
@@ -274,7 +288,9 @@ def run_raster_scan(
             on_point(ix, iy, sample)
 
             if ix < nb_x - 1:
-                galvo.move_relative_pulses(step_x, 0.0)
+                # No motion since the read above, so hand the move the position
+                # it would otherwise re-read from hardware.
+                galvo.move_relative_pulses(step_x, 0.0, current_xy_pulses=xy_p)
                 settle(twait)
 
         if stop_check():
@@ -282,8 +298,11 @@ def run_raster_scan(
 
         if iy < nb_y - 1:
             # End of row: correct back to x_start, step y down.
-            x_curr, _ = galvo.read_xy_nm()
-            galvo.move_relative_pulses((x_start - x_curr) * k, step_y)
+            xy_p_curr = galvo.read_xy_pulses()
+            x_curr = xy_p_curr[0] / k
+            galvo.move_relative_pulses(
+                (x_start - x_curr) * k, step_y, current_xy_pulses=xy_p_curr
+            )
             settle(twait)
 
     # Return to centre.
