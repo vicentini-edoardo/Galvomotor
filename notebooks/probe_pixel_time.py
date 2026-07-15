@@ -1,8 +1,9 @@
 """Time-per-pixel probe: wraps galvo/nea calls, prints where the time goes.
 
 Usage:
-    python probe_pixel_time.py            # mock backends, 4x4 grid
-    python probe_pixel_time.py --real      # real hardware backends
+    python probe_pixel_time.py                    # mock backends, 4x4 grid
+    python probe_pixel_time.py --real              # real hardware backends
+    python probe_pixel_time.py --nb-z 3 --dz-nm 500  # 3-D scan (Z stack)
 
 ponytail: standalone script, no test framework — just needs one run to read timings.
 """
@@ -33,6 +34,7 @@ def instrument(galvo, nea, bucket: dict):
     galvo.move_relative_pulses = timed(bucket, "move_relative_pulses")(galvo.move_relative_pulses)
     galvo.read_xy_pulses = timed(bucket, "read_xy_pulses")(galvo.read_xy_pulses)
     nea.read_sample = timed(bucket, "read_sample")(nea.read_sample)
+    nea.move_z_relative = timed(bucket, "move_z_relative")(nea.move_z_relative)
 
 
 def main() -> None:
@@ -42,7 +44,10 @@ def main() -> None:
     parser.add_argument("--twait", type=float, default=0.0)
     parser.add_argument("--t-integ", type=float, default=0.4)
     parser.add_argument("--host", default="nea-server")
+    parser.add_argument("--nb-z", type=int, default=1, help="Z slices (>1 for a 3-D scan)")
+    parser.add_argument("--dz-nm", type=float, default=0.0, help="Z step between slices, in nm")
     args = parser.parse_args()
+    is_3d = args.nb_z > 1
 
     if args.real:
         from galvo_gui.motion.galvo_nea import RealGalvoBackend, RealNeaBackend
@@ -67,16 +72,43 @@ def main() -> None:
         pixel_times.append(now - pixel_t0)
         pixel_t0 = now
 
-    run_raster_scan(
-        galvo, nea,
-        dx_pulses=1000.0, dy_pulses=1000.0,
-        nb_x=args.nb, nb_y=args.nb,
-        twait=args.twait, t_integ_s=args.t_integ,
-        on_point=on_point, stop_check=lambda: False,
-    )
+    if is_3d:
+        # Mirror ScanWorker.run(): centre the stack on the current focus,
+        # step down through it, then restore Z at the end.
+        half_span = args.dz_nm * (args.nb_z - 1) / 2.0
+        nea.move_z_relative(-half_span)
+        z_moved_nm = -half_span
+        try:
+            for iz in range(args.nb_z):
+                run_raster_scan(
+                    galvo, nea,
+                    dx_pulses=1000.0, dy_pulses=1000.0,
+                    nb_x=args.nb, nb_y=args.nb,
+                    twait=args.twait, t_integ_s=args.t_integ,
+                    on_point=on_point, stop_check=lambda: False,
+                )
+                if iz < args.nb_z - 1:
+                    nea.move_z_relative(args.dz_nm)
+                    z_moved_nm += args.dz_nm
+                    # First pixel of each new slice includes the inter-slice Z
+                    # move; reset the pixel clock so it isn't charged to pixel-
+                    # to-pixel XY timing.
+                    pixel_t0 = time.perf_counter()
+        finally:
+            nea.move_z_relative(-z_moved_nm)
+    else:
+        run_raster_scan(
+            galvo, nea,
+            dx_pulses=1000.0, dy_pulses=1000.0,
+            nb_x=args.nb, nb_y=args.nb,
+            twait=args.twait, t_integ_s=args.t_integ,
+            on_point=on_point, stop_check=lambda: False,
+        )
 
-    print(f"\n--- {'real' if args.real else 'mock'} backend, {args.nb}x{args.nb} grid, "
-          f"twait={args.twait}, t_integ={args.t_integ} ---\n")
+    grid_desc = f"{args.nb}x{args.nb}x{args.nb_z}" if is_3d else f"{args.nb}x{args.nb}"
+    print(f"\n--- {'real' if args.real else 'mock'} backend, {grid_desc} grid, "
+          f"twait={args.twait}, t_integ={args.t_integ}"
+          f"{f', dz={args.dz_nm}nm' if is_3d else ''} ---\n")
     print(f"{'call':<24}{'n':>5}{'mean(ms)':>12}{'min(ms)':>10}{'max(ms)':>10}")
     for name, times in bucket.items():
         print(f"{name:<24}{len(times):>5}{statistics.mean(times)*1e3:>12.2f}"
