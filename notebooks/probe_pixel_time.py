@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from functools import wraps
 
-from galvo_gui.motion.base import run_raster_scan
+from galvo_gui.motion.base import GalvoError, run_raster_scan
 
 
 def timed(bucket: dict, name: str):
@@ -72,6 +72,20 @@ def main() -> None:
         pixel_times.append(now - pixel_t0)
         pixel_t0 = now
 
+    def dump_move_diag(context: str) -> None:
+        """On a galvo move failure, print the backend's per-move diagnostics
+        (offset applied, goto units commanded, before/after read-back) so a
+        systematic miss can be read off instead of guessed at."""
+        diag = getattr(galvo, "last_move_diagnostics", lambda: {})()
+        print(f"\n!!! galvo move failed during {context}")
+        if diag:
+            for key, value in diag.items():
+                print(f"    {key:<24}{value}")
+        print(f"    offset_x_p (applied)    {getattr(galvo, '_offset_x_p', '?')}")
+        print(f"    offset_y_p (applied)    {getattr(galvo, '_offset_y_p', '?')}")
+        print(f"    offset_enabled          {getattr(galvo, '_offset_enabled', '?')}")
+        print(f"    x_goto_bias             {getattr(galvo, '_x_goto_bias', '?')}")
+
     if is_3d:
         # Mirror ScanWorker.run(): centre the stack on the current focus,
         # step down through it, then restore Z at the end.
@@ -80,13 +94,17 @@ def main() -> None:
         z_moved_nm = -half_span
         try:
             for iz in range(args.nb_z):
-                run_raster_scan(
-                    galvo, nea,
-                    dx_pulses=1000.0, dy_pulses=1000.0,
-                    nb_x=args.nb, nb_y=args.nb,
-                    twait=args.twait, t_integ_s=args.t_integ,
-                    on_point=on_point, stop_check=lambda: False,
-                )
+                try:
+                    run_raster_scan(
+                        galvo, nea,
+                        dx_pulses=1000.0, dy_pulses=1000.0,
+                        nb_x=args.nb, nb_y=args.nb,
+                        twait=args.twait, t_integ_s=args.t_integ,
+                        on_point=on_point, stop_check=lambda: False,
+                    )
+                except GalvoError:
+                    dump_move_diag(f"Z slice {iz}/{args.nb_z - 1}")
+                    raise
                 if iz < args.nb_z - 1:
                     nea.move_z_relative(args.dz_nm)
                     z_moved_nm += args.dz_nm
@@ -97,13 +115,17 @@ def main() -> None:
         finally:
             nea.move_z_relative(-z_moved_nm)
     else:
-        run_raster_scan(
-            galvo, nea,
-            dx_pulses=1000.0, dy_pulses=1000.0,
-            nb_x=args.nb, nb_y=args.nb,
-            twait=args.twait, t_integ_s=args.t_integ,
-            on_point=on_point, stop_check=lambda: False,
-        )
+        try:
+            run_raster_scan(
+                galvo, nea,
+                dx_pulses=1000.0, dy_pulses=1000.0,
+                nb_x=args.nb, nb_y=args.nb,
+                twait=args.twait, t_integ_s=args.t_integ,
+                on_point=on_point, stop_check=lambda: False,
+            )
+        except GalvoError:
+            dump_move_diag("2-D raster")
+            raise
 
     grid_desc = f"{args.nb}x{args.nb}x{args.nb_z}" if is_3d else f"{args.nb}x{args.nb}"
     print(f"\n--- {'real' if args.real else 'mock'} backend, {grid_desc} grid, "
