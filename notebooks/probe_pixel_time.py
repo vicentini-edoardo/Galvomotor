@@ -46,6 +46,12 @@ def main() -> None:
     parser.add_argument("--host", default="nea-server")
     parser.add_argument("--nb-z", type=int, default=1, help="Z slices (>1 for a 3-D scan)")
     parser.add_argument("--dz-nm", type=float, default=0.0, help="Z step between slices, in nm")
+    parser.add_argument(
+        "--no-offset",
+        action="store_true",
+        help="disable galvo XY offset correction (workaround for a spurious "
+             "auto-calibrated offset that pushes moves off-target)",
+    )
     args = parser.parse_args()
     is_3d = args.nb_z > 1
 
@@ -59,6 +65,16 @@ def main() -> None:
         galvo, nea = MockGalvoBackend(), MockNeaBackend()
         galvo.connect()
         nea.connect()
+
+    def show_offset(label: str) -> None:
+        print(f"[{label}] offset_x_p={getattr(galvo, '_offset_x_p', '?')} "
+              f"offset_y_p={getattr(galvo, '_offset_y_p', '?')} "
+              f"enabled={galvo.offset_correction_enabled()}")
+
+    show_offset("after connect/calibration")
+    if args.no_offset:
+        galvo.set_offset_correction_enabled(False)
+        show_offset("after --no-offset")
 
     bucket: dict[str, list[float]] = defaultdict(list)
     instrument(galvo, nea, bucket)
@@ -94,6 +110,7 @@ def main() -> None:
         z_moved_nm = -half_span
         try:
             for iz in range(args.nb_z):
+                show_offset(f"start of Z slice {iz}")
                 try:
                     run_raster_scan(
                         galvo, nea,
