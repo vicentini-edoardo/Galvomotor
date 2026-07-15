@@ -384,7 +384,11 @@ class RealGalvoBackend(_StatusReporterMixin, GalvoBackend):
             return
 
         self._command_goto(gx_target, gy_target)
-        time.sleep(_MOVE_SETTLE_S)
+        # No fixed settle sleep here: _wait_for_axis_follow already polls the
+        # read-back from the moment the goto is issued and retries at
+        # _MOVE_FOLLOW_POLL_S until it converges or _MOVE_FOLLOW_TIMEOUT_S
+        # elapses, so a move that has already landed (the common case) returns
+        # as soon as that's confirmed instead of always paying a flat 50ms.
         xb_after, yb_after = self._wait_for_axis_follow(
             dx_p,
             dy_p,
